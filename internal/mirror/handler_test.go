@@ -22,7 +22,10 @@ type fakeRegistry struct {
 	server   *httptest.Server
 	zipBytes []byte
 	zipSum   string
-	hits     atomic.Int64
+	// servedShasum is what the download endpoint reports; defaults to the true
+	// sum but tests can override it to exercise mismatch / empty-checksum paths.
+	servedShasum string
+	hits         atomic.Int64
 }
 
 func newFakeRegistry(t *testing.T) *fakeRegistry {
@@ -30,6 +33,7 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 	zip := []byte("PK\x03\x04 this is a fake provider zip payload")
 	sum := sha256.Sum256(zip)
 	fr := &fakeRegistry{zipBytes: zip, zipSum: hex.EncodeToString(sum[:])}
+	fr.servedShasum = fr.zipSum
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/providers/hashicorp/null/versions", func(w http.ResponseWriter, _ *http.Request) {
@@ -48,7 +52,7 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 			"arch":         "amd64",
 			"filename":     "terraform-provider-null_3.2.0_linux_amd64.zip",
 			"download_url": fr.server.URL + "/zip",
-			"shasum":       fr.zipSum,
+			"shasum":       fr.servedShasum,
 		})
 	})
 	mux.HandleFunc("GET /zip", func(w http.ResponseWriter, _ *http.Request) {
@@ -70,7 +74,11 @@ func newTestHandler(t *testing.T, base string) *Handler {
 	}
 	u := NewUpstream(base, "terrastrata-test", 5*time.Second)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewHandler(c, u, NopMetrics{}, log)
+	h, err := NewHandler(c, u, NopMetrics{}, t.TempDir(), log)
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h
 }
 
 func doGet(t *testing.T, srv *httptest.Server, path string) *http.Response {
@@ -190,6 +198,46 @@ func TestInvalidPathReturns400(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestZipChecksumMismatchIsRejectedAndNotCached(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.servedShasum = "deadbeef" // does not match the real zip
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	zipPath := "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+	resp := doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 on checksum mismatch", resp.StatusCode)
+	}
+	// A corrupt download must never be cached: a retry still goes upstream.
+	resp = doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got == "HIT" {
+		t.Error("checksum-mismatched zip must not be cached")
+	}
+}
+
+func TestZipMissingUpstreamChecksumIsRejected(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.servedShasum = "" // registry provides no checksum
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	zipPath := "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+	resp := doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 when upstream provides no checksum", resp.StatusCode)
 	}
 }
 

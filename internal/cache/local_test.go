@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -17,7 +18,7 @@ func TestLocalPutGetRoundTrip(t *testing.T) {
 	key := "registry.terraform.io/hashicorp/null/index.json"
 	want := []byte(`{"versions":{"3.2.0":{}}}`)
 
-	if err := c.Put(ctx, key, want); err != nil {
+	if err := c.Put(ctx, key, bytes.NewReader(want)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -63,7 +64,7 @@ func TestLocalPutIsAtomicAndNested(t *testing.T) {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	key := "a/b/c/d.zip"
-	if err := c.Put(context.Background(), key, []byte("payload")); err != nil {
+	if err := c.Put(context.Background(), key, bytes.NewReader([]byte("payload"))); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "a/b/c/d.zip")); err != nil {
@@ -81,7 +82,7 @@ func TestLocalRejectsPathTraversal(t *testing.T) {
 	// keep it inside the root. "../../etc/passwd" cleans to "/etc/passwd"
 	// anchored at root, so it stays contained rather than escaping.
 	key := "../../../../etc/passwd"
-	if err := c.Put(context.Background(), key, []byte("x")); err != nil {
+	if err := c.Put(context.Background(), key, bytes.NewReader([]byte("x"))); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	// The file must live under root, not at the real /etc/passwd.

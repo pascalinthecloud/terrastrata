@@ -60,9 +60,11 @@ func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, bool, error) 
 	return f, true, nil
 }
 
-// Put writes data atomically: it streams to a temp file in the destination
-// directory and renames it into place, so readers never observe a partial file.
-func (l *Local) Put(_ context.Context, key string, data []byte) error {
+// Put writes r atomically and durably: it streams to a temp file in the
+// destination directory, fsyncs the file and its parent directory, then renames
+// it into place. Readers never observe a partial file, and a committed object
+// survives a node crash whole (so a truncated blob is never served as a HIT).
+func (l *Local) Put(_ context.Context, key string, r io.Reader) error {
 	path, err := l.resolve(key)
 	if err != nil {
 		return err
@@ -80,9 +82,13 @@ func (l *Local) Put(_ context.Context, key string, data []byte) error {
 	// Best-effort cleanup if we bail out before the rename succeeds.
 	defer func() { _ = os.Remove(tmpName) }()
 
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := io.Copy(tmp, r); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("cache: write %q: %w", key, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("cache: fsync %q: %w", key, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("cache: close temp for %q: %w", key, err)
@@ -90,5 +96,19 @@ func (l *Local) Put(_ context.Context, key string, data []byte) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("cache: commit %q: %w", key, err)
 	}
+	// fsync the directory so the rename itself is durable across a crash.
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("cache: fsync dir for %q: %w", key, err)
+	}
 	return nil
+}
+
+// syncDir flushes a directory entry change (the rename) to stable storage.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) //nolint:gosec // G304: dir derives from the cache root
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }

@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -73,12 +72,14 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
 	return out.Body, true, nil
 }
 
-// Put implements Cache, uploading the object under the prefixed key.
-func (s *S3) Put(ctx context.Context, key string, data []byte) error {
+// Put implements Cache, uploading the object under the prefixed key. When r is
+// an io.ReadSeeker (e.g. an *os.File), the SDK derives the content length and
+// avoids buffering; Layered passes the warmed local file for exactly this reason.
+func (s *S3) Put(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.objectKey(key)),
-		Body:   bytes.NewReader(data),
+		Body:   r,
 	})
 	if err != nil {
 		return fmt.Errorf("cache: s3 put %q: %w", key, err)
@@ -89,11 +90,15 @@ func (s *S3) Put(ctx context.Context, key string, data []byte) error {
 // isNotFound reports whether err is an S3 "object absent" error. Different
 // S3-compatible backends surface this as NoSuchKey or NotFound, so we match on
 // the smithy API error code rather than a concrete type.
+//
+// NoSuchBucket is deliberately NOT treated as not-found: a missing/misconfigured
+// bucket is an operator fault, and swallowing it as a cache miss would silently
+// disable the durable cache forever. It must propagate as an error.
 func isNotFound(err error) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
-		case "NoSuchKey", "NotFound", "NoSuchBucket":
+		case "NoSuchKey", "NotFound":
 			return true
 		}
 	}

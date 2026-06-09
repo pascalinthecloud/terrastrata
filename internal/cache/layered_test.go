@@ -28,12 +28,14 @@ func (m *memCache) Get(_ context.Context, key string) (io.ReadCloser, bool, erro
 	return io.NopCloser(bytes.NewReader(b)), true, nil
 }
 
-func (m *memCache) Put(_ context.Context, key string, data []byte) error {
+func (m *memCache) Put(_ context.Context, key string, r io.Reader) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	m.data[key] = cp
+	m.data[key] = data
 	return nil
 }
 
@@ -54,7 +56,7 @@ func TestLayeredLocalHitSkipsDurable(t *testing.T) {
 	l := NewLayered(local, durable, discardLogger())
 	ctx := context.Background()
 
-	_ = local.Put(ctx, "k", []byte("local-value"))
+	_ = local.Put(ctx, "k", bytes.NewReader([]byte("local-value")))
 
 	rc, hit, err := l.Get(ctx, "k")
 	if err != nil || !hit {
@@ -73,7 +75,7 @@ func TestLayeredDurableHitWarmsLocal(t *testing.T) {
 	l := NewLayered(local, durable, discardLogger())
 	ctx := context.Background()
 
-	_ = durable.Put(ctx, "k", []byte("durable-value"))
+	_ = durable.Put(ctx, "k", bytes.NewReader([]byte("durable-value")))
 
 	rc, hit, err := l.Get(ctx, "k")
 	if err != nil || !hit {
@@ -109,7 +111,7 @@ func TestLayeredPutWritesBothLayers(t *testing.T) {
 	done := make(chan error, 1)
 	l.onDurablePut = func(_ string, err error) { done <- err }
 
-	if err := l.Put(context.Background(), "k", []byte("v")); err != nil {
+	if err := l.Put(context.Background(), "k", bytes.NewReader([]byte("v"))); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	// Local is synchronous.
@@ -133,7 +135,7 @@ func TestLayeredPutWritesBothLayers(t *testing.T) {
 func TestLayeredPutWithoutDurable(t *testing.T) {
 	local := newMemCache()
 	l := NewLayered(local, nil, discardLogger())
-	if err := l.Put(context.Background(), "k", []byte("v")); err != nil {
+	if err := l.Put(context.Background(), "k", bytes.NewReader([]byte("v"))); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	if !local.has("k") {

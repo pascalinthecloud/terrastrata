@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -61,49 +60,62 @@ func (l *Layered) Get(ctx context.Context, key string) (io.ReadCloser, bool, err
 		return nil, false, nil
 	}
 
-	// Durable hit: read it fully so we can both warm the local layer and hand a
-	// reader back to the caller. Objects are bounded (provider zips ~tens of MB).
-	data, err := io.ReadAll(rc)
-	_ = rc.Close()
-	if err != nil {
+	// Durable hit: stream it into the local layer (warming), then re-open the
+	// warmed file to hand back to the caller. This keeps memory flat — the object
+	// is never buffered whole — at the cost of one local read-back.
+	defer func() { _ = rc.Close() }()
+	if err := l.local.Put(ctx, key, rc); err != nil {
+		// Warming is best-effort; fall back to serving the durable stream directly.
+		l.log.Warn("cache warm failed", "key", key, "err", err)
 		return nil, false, err
 	}
-	if err := l.local.Put(ctx, key, data); err != nil {
-		// Warming is best-effort; a failure here must not fail the request.
-		l.log.Warn("cache warm failed", "key", key, "err", err)
+	local, localHit, err := l.local.Get(ctx, key)
+	if err != nil || !localHit {
+		l.log.Warn("cache warm read-back failed", "key", key, "err", err)
+		return nil, false, err
 	}
-	return io.NopCloser(bytes.NewReader(data)), true, nil
+	return local, true, nil
 }
 
-// Put writes locally (synchronous) and to the durable store (asynchronous).
-func (l *Layered) Put(ctx context.Context, key string, data []byte) error {
-	if err := l.local.Put(ctx, key, data); err != nil {
+// Put writes the object to the local layer synchronously, then (if a durable
+// layer exists) uploads to it asynchronously by re-reading the warmed local
+// file — so nothing is buffered in memory and request latency never depends on
+// the remote store.
+func (l *Layered) Put(ctx context.Context, key string, r io.Reader) error {
+	if err := l.local.Put(ctx, key, r); err != nil {
 		return err
 	}
 	if l.durable == nil {
 		return nil
 	}
-
-	// Copy because the caller may reuse the buffer once Put returns.
-	buf := make([]byte, len(data))
-	copy(buf, data)
 	//nolint:gosec // G118: detached context is intentional — the durable upload
 	// must outlive the originating request.
-	go l.putDurable(key, buf)
+	go l.putDurable(key)
 	return nil
 }
 
-func (l *Layered) putDurable(key string, data []byte) {
+func (l *Layered) putDurable(key string) {
 	// A detached context: the originating request may already be done.
 	ctx, cancel := context.WithTimeout(context.Background(), l.asyncPutTimeout)
 	defer cancel()
 
-	err := l.durable.Put(ctx, key, data)
-	if err != nil {
+	rc, hit, err := l.local.Get(ctx, key)
+	if err != nil || !hit {
+		l.log.Error("durable put: local read-back failed", "key", key, "hit", hit, "err", err)
+		l.notifyDurablePut(key, err)
+		return
+	}
+	defer func() { _ = rc.Close() }()
+
+	if err := l.durable.Put(ctx, key, rc); err != nil {
 		l.log.Error("durable cache put failed", "key", key, "err", err)
 	} else {
-		l.log.Debug("durable cache put", "key", key, "bytes", len(data))
+		l.log.Debug("durable cache put", "key", key)
 	}
+	l.notifyDurablePut(key, err)
+}
+
+func (l *Layered) notifyDurablePut(key string, err error) {
 	if l.onDurablePut != nil {
 		l.onDurablePut(key, err)
 	}

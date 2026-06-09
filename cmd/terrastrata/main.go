@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -67,7 +68,12 @@ func run() error {
 
 	metrics := observ.NewMetrics()
 	upstream := mirror.NewUpstream(cfg.UpstreamBase, "terrastrata/"+version, cfg.UpstreamTimeout)
-	handler := mirror.NewHandler(blobCache, upstream, metrics, logger)
+	// Stage zips under the cache dir: the container root filesystem is read-only,
+	// so this is the writable volume available for verification.
+	handler, err := mirror.NewHandler(blobCache, upstream, metrics, filepath.Join(cfg.CacheDir, ".staging"), logger)
+	if err != nil {
+		return err
+	}
 
 	srv := buildServer(cfg, handler, metrics, logger)
 

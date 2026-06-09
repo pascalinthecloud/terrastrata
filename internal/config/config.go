@@ -123,6 +123,18 @@ func (c Config) validate() error {
 		if len(missing) > 0 {
 			return fmt.Errorf("config: S3_BUCKET is set but %s missing", strings.Join(missing, ", "))
 		}
+		// Validate the custom endpoint at startup rather than failing on the first
+		// upload: a scheme-less value would otherwise be accepted here and only
+		// rejected later by the AWS SDK inside a swallowed async error.
+		if c.S3.Endpoint != "" {
+			u, err := url.Parse(c.S3.Endpoint)
+			if err != nil || u.Scheme == "" || u.Host == "" {
+				return fmt.Errorf("config: S3_ENDPOINT %q is not a valid absolute URL", c.S3.Endpoint)
+			}
+			if u.Scheme != "https" && u.Scheme != "http" {
+				return fmt.Errorf("config: S3_ENDPOINT scheme %q must be http or https", u.Scheme)
+			}
+		}
 	} else if c.S3.AccessKey != "" || c.S3.SecretKey != "" || c.S3.Endpoint != "" {
 		return errors.New("config: S3 credentials/endpoint set but S3_BUCKET is empty")
 	}

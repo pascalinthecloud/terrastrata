@@ -91,6 +91,30 @@ func TestFromEnvS3Enabled(t *testing.T) {
 	}
 }
 
+func TestFromEnvInvalidS3Endpoint(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("S3_BUCKET", "b")
+	t.Setenv("S3_ACCESS_KEY", "a")
+	t.Setenv("S3_SECRET_KEY", "s")
+	t.Setenv("S3_ENDPOINT", "s3.de.io.cloud.ovh.net") // missing scheme
+
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("expected error for scheme-less S3_ENDPOINT")
+	}
+}
+
+func TestFromEnvValidS3Endpoint(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("S3_BUCKET", "b")
+	t.Setenv("S3_ACCESS_KEY", "a")
+	t.Setenv("S3_SECRET_KEY", "s")
+	t.Setenv("S3_ENDPOINT", "https://s3.de.io.cloud.ovh.net")
+
+	if _, err := FromEnv(); err != nil {
+		t.Fatalf("unexpected error for valid S3_ENDPOINT: %v", err)
+	}
+}
+
 func TestFromEnvInvalidUpstream(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("UPSTREAM_BASE", "not-a-url")

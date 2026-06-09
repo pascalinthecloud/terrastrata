@@ -16,13 +16,18 @@ import (
 
 // Cache is a simple key/value blob store. Implementations must be safe for
 // concurrent use.
+//
+// Put streams from a reader rather than taking a []byte so that large objects
+// (provider archives are tens to hundreds of MB) are never fully buffered in
+// memory.
 type Cache interface {
 	// Get returns a reader for the object stored under key. When the object is
 	// absent it returns hit == false and a nil reader (not an error). The caller
 	// must Close a non-nil reader.
 	Get(ctx context.Context, key string) (rc io.ReadCloser, hit bool, err error)
 
-	// Put stores data under key, overwriting any existing object. Some
-	// implementations (Layered) may persist to slower backends asynchronously.
-	Put(ctx context.Context, key string, data []byte) error
+	// Put stores the contents of r under key, overwriting any existing object.
+	// It reads r to EOF. Some implementations (Layered) may persist to slower
+	// backends asynchronously.
+	Put(ctx context.Context, key string, r io.Reader) error
 }
