@@ -1,0 +1,32 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Start from golangci-lint's curated default set (errcheck, govet,
+  # ineffassign, staticcheck, unused) and add a few high-value linters.
+  default: standard
+  enable:
+    - bodyclose # HTTP response bodies must be closed
+    - gosec # security-focused checks
+    - misspell # spelling in comments/strings
+    - revive # style/lint rules
+    - unconvert # redundant type conversions
+    - errorlint # correct error wrapping/comparison
+  settings:
+    gosec:
+      excludes:
+        - G404 # we do not use math/rand for security-sensitive values
+  exclusions:
+    rules:
+      # Test files may ignore errors and use weaker checks for brevity.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

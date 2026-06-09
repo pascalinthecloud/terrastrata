@@ -1,0 +1,97 @@
+# Default values for terrastrata.
+
+image:
+  repository: ghcr.io/pascalinthecloud/terrastrata
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1 # keep at 1 with a ReadWriteOnce PVC
+
+# Core configuration (maps to terrastrata env vars).
+config:
+  listenAddr: ":8080"
+  upstreamBase: "https://registry.terraform.io"
+  logLevel: "info"
+
+# Optional bearer-token auth on mirror endpoints.
+# When auth.existingSecret is set, the token is read from it (key: AUTH_TOKEN);
+# otherwise auth.token is used to create a Secret. Empty = auth disabled.
+auth:
+  enabled: false
+  token: ""
+  existingSecret: ""
+
+# Optional durable S3-compatible cache layer.
+s3:
+  enabled: false
+  bucket: ""
+  prefix: "tf-mirror"
+  endpoint: "" # e.g. https://s3.de.io.cloud.ovh.net (leave blank for AWS)
+  region: "us-east-1"
+  # Provide credentials inline (chart creates a Secret) or via existingSecret
+  # with keys S3_ACCESS_KEY / S3_SECRET_KEY.
+  accessKey: ""
+  secretKey: ""
+  existingSecret: ""
+
+# Local filesystem cache (PVC). Required even when S3 is enabled (fast layer).
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 20Gi
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: tf-mirror.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Pod- and container-level hardening. Defaults match the distroless nonroot image.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

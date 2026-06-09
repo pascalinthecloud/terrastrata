@@ -52,9 +52,22 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. Whe
 
 ### 1. Deploy to Kubernetes
 
+With raw manifests:
+
 ```bash
-# Fill in your S3 credentials in k8s/manifests.yaml first
-kubectl apply -f k8s/manifests.yaml
+# Optionally fill in your S3 credentials in deploy/k8s/manifests.yaml first
+kubectl apply -f deploy/k8s/manifests.yaml
+```
+
+Or with Helm:
+
+```bash
+helm install tf-mirror deploy/helm/terrastrata \
+  --namespace tf-mirror --create-namespace
+# With durable S3 cache:
+#   --set s3.enabled=true --set s3.bucket=tf-mirror \
+#   --set s3.endpoint=https://s3.de.io.cloud.ovh.net --set s3.region=de \
+#   --set s3.accessKey=... --set s3.secretKey=...
 ```
 
 ### 2. Configure Terraform agents
@@ -98,6 +111,14 @@ All configuration is via environment variables:
 | `S3_REGION` | `us-east-1` | S3 region |
 | `S3_ACCESS_KEY` | _(empty)_ | S3 access key |
 | `S3_SECRET_KEY` | _(empty)_ | S3 secret key |
+| `AUTH_TOKEN` | _(empty)_ | Optional bearer token required on mirror endpoints. **Leave empty to disable auth** (internal mode) |
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+
+> **Note on `AUTH_TOKEN`:** Terraform's `network_mirror` client does not send
+> authentication headers, so bearer auth is meant for an API gateway that injects
+> the header, or for non-Terraform consumers. For Terraform clients, rely on
+> network policy / ingress controls instead. `/health` and `/metrics` are always
+> unauthenticated.
 
 ### OVH Object Storage example
 
@@ -115,8 +136,11 @@ All configuration is via environment variables:
 ## Building
 
 ```bash
-# Build binary
-go build -o terrastrata .
+# Build binary (or: make build -> ./bin/terrastrata)
+go build -o terrastrata ./cmd/terrastrata
+
+# Run the test suite (race detector)
+make test
 
 # Build container image
 docker build -t your-registry/terrastrata:latest .
@@ -137,14 +161,24 @@ cache/
     └── hashicorp/
         └── azurerm/
             ├── index.json                         # versions list
+            ├── 3.110.0.json                       # archives metadata for 3.110.0
             └── 3.110.0/
                 └── download/
                     └── linux_amd64/
-                        ├── index.json             # download metadata
                         └── terraform-provider-azurerm_3.110.0_linux_amd64.zip
 ```
 
-The same structure is mirrored under your configured S3 prefix.
+This matches the [network mirror protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol)
+endpoints: `index.json` (versions) and `<version>.json` (archives). The same
+structure is mirrored under your configured S3 prefix.
+
+## Observability
+
+- `GET /health` — liveness/readiness probe (always unauthenticated)
+- `GET /metrics` — Prometheus metrics (cache hit/miss by resource, HTTP request
+  counts and latency by route)
+- Structured JSON access logs on stdout, one line per request, with a
+  per-request `X-Request-Id`
 
 ---
 
