@@ -47,6 +47,8 @@ spec:
               value: {{ .Values.config.upstreamBase | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: INDEX_TTL
+              value: {{ .Values.config.indexTTL | quote }}
             {{- if .Values.auth.enabled }}
             - name: AUTH_TOKEN
               valueFrom:

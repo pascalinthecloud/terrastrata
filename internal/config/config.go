@@ -29,6 +29,12 @@ const (
 	// DefaultUpstreamTimeout bounds a single upstream registry request. Provider
 	// zips are tens of MB, so this is generous without being unbounded.
 	DefaultUpstreamTimeout = 60 * time.Second
+
+	// DefaultIndexTTL is how long a cached provider versions index is served
+	// before it is revalidated against upstream, so newly published versions
+	// become visible. Archives and zips are immutable per version and are never
+	// expired.
+	DefaultIndexTTL = 10 * time.Minute
 )
 
 // Config is the fully validated runtime configuration. Treat it as immutable
@@ -44,6 +50,10 @@ type Config struct {
 
 	LogLevel        slog.Level
 	UpstreamTimeout time.Duration
+
+	// IndexTTL is the freshness window for the versions index. Zero disables
+	// expiry (cache forever).
+	IndexTTL time.Duration
 
 	S3 S3Config
 }
@@ -88,10 +98,32 @@ func FromEnv() (Config, error) {
 	}
 	cfg.LogLevel = level
 
+	ttl, err := parseIndexTTL(os.Getenv("INDEX_TTL"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.IndexTTL = ttl
+
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// parseIndexTTL parses the INDEX_TTL duration. An empty value selects the
+// default; "0" (or any zero duration) disables expiry. Negative is rejected.
+func parseIndexTTL(s string) (time.Duration, error) {
+	if s == "" {
+		return DefaultIndexTTL, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("config: invalid INDEX_TTL %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("config: INDEX_TTL %q must not be negative", s)
+	}
+	return d, nil
 }
 
 func (c Config) validate() error {

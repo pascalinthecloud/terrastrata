@@ -100,6 +100,7 @@ set without credentials).
 | `S3_SECRET_KEY` | _(empty)_ | S3 credentials |
 | `AUTH_TOKEN` | _(empty)_ | Optional bearer token on mirror endpoints; empty = auth disabled |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `INDEX_TTL` | `10m` | Versions-index freshness window (Go duration); `0` disables expiry |
 
 ### `internal/cache`
 - `Cache` interface: `Get(ctx, key) (io.ReadCloser, bool, error)` and `Put(ctx, key, data)`.
@@ -117,7 +118,8 @@ set without credentials).
   - `GET /:hostname/:namespace/:type/index.json` — versions index
   - `GET /:hostname/:namespace/:type/:version.json` — archives index
   - `GET /:hostname/:namespace/:type/:version/download/:platform/:filename` — provider zip
-  - Sets `X-Cache: HIT|MISS`; verifies the registry SHA-256 before caching a zip; treats the cache as best-effort (never a hard dependency).
+  - Sets `X-Cache: HIT|MISS|STALE`; verifies the registry SHA-256 before caching a zip; treats the cache as best-effort (never a hard dependency).
+  - Versions index is revalidated on `INDEX_TTL`; on upstream failure during revalidation it serves the last-known-good copy stale (`freshness.go` holds the envelope helpers).
 
 ### `internal/httpx` and `internal/observ`
 Cross-cutting HTTP middleware (request-id, structured access logging, panic
@@ -186,6 +188,11 @@ protocol: `index.json` → `/v1/providers/:ns/:type/versions`, and each archive 
 
 Same structure is mirrored under the configured S3 prefix.
 
+Note: the versions `index.json` is stored as an internal freshness envelope
+(`{"fetched_at":..., "body":{...}}`) so its TTL survives copying between cache
+layers; only `body` is ever served to clients. Archives `<version>.json` and zips
+are stored as raw bytes (immutable per version).
+
 ---
 
 ## Kubernetes deployment notes
@@ -213,7 +220,6 @@ provider_installation {
 
 ## Known limitations / open TODOs
 
-- No cache eviction or TTL for `index.json` — versions list can go stale
 - No pre-warm on startup — cache is cold until providers are first requested
 - Only provider mirror protocol supported — no module registry protocol
 - Replicas limited to 1 with RWO PVC (use S3-only / RWX for HA)
@@ -222,9 +228,9 @@ provider_installation {
 
 ## Roadmap
 
-- [ ] Cache eviction / TTL for index.json
 - [ ] Pre-warm mode: seed cache from a provider list on startup
 - [ ] Support for module registry protocol
+- [x] Cache TTL / revalidation for index.json (with serve-stale-on-outage)
 - [x] Prometheus metrics endpoint
 - [x] Helm chart
 
