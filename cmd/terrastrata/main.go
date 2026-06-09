@@ -68,9 +68,16 @@ func run() error {
 
 	metrics := observ.NewMetrics()
 	upstream := mirror.NewUpstream(cfg.UpstreamBase, "terrastrata/"+version, cfg.UpstreamTimeout)
-	// Stage zips under the cache dir: the container root filesystem is read-only,
-	// so this is the writable volume available for verification.
-	handler, err := mirror.NewHandler(blobCache, upstream, metrics, filepath.Join(cfg.CacheDir, ".staging"), logger)
+	handler, err := mirror.NewHandler(mirror.Options{
+		Cache:    blobCache,
+		Upstream: upstream,
+		Metrics:  metrics,
+		// Stage zips under the cache dir: the container root filesystem is
+		// read-only, so this is the writable volume available for verification.
+		StagingDir: filepath.Join(cfg.CacheDir, ".staging"),
+		IndexTTL:   cfg.IndexTTL,
+		Logger:     logger,
+	})
 	if err != nil {
 		return err
 	}
@@ -84,6 +91,7 @@ func run() error {
 		"cache_dir", cfg.CacheDir,
 		"s3", cfg.S3.Enabled(),
 		"auth", cfg.AuthToken != "",
+		"index_ttl", cfg.IndexTTL,
 	)
 	return serve(srv, logger)
 }

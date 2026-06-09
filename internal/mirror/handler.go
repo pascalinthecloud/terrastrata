@@ -18,6 +18,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // maxZipBytes caps a single provider archive we will stage and cache. Real
@@ -51,6 +52,13 @@ type Handler struct {
 	// checksum is verified. It must be on a writable volume (the container root
 	// filesystem is read-only), so it lives under the cache directory.
 	stagingDir string
+
+	// indexTTL is how long a cached versions index is served before it is
+	// revalidated against upstream. Zero disables expiry (cache forever).
+	indexTTL time.Duration
+
+	// now returns the current time; overridable in tests for deterministic TTL.
+	now func() time.Time
 }
 
 // Cache is the subset of internal/cache used by the handler, restated here to
@@ -60,17 +68,36 @@ type Cache interface {
 	Put(ctx context.Context, key string, r io.Reader) error
 }
 
-// NewHandler builds a mirror Handler. metrics may be NopMetrics{}. stagingDir
-// must be a writable directory (typically a subdir of the cache dir); it is
-// created if absent.
-func NewHandler(c Cache, u *Upstream, m Metrics, stagingDir string, log *slog.Logger) (*Handler, error) {
-	if m == nil {
-		m = NopMetrics{}
+// Options configures a Handler. Cache, Upstream and Logger are required.
+type Options struct {
+	Cache    Cache
+	Upstream *Upstream
+	Metrics  Metrics // defaults to NopMetrics{} when nil
+	// StagingDir is a writable directory for verifying zips; created if absent.
+	StagingDir string
+	// IndexTTL is the versions-index freshness window; zero disables expiry.
+	IndexTTL time.Duration
+	Logger   *slog.Logger
+}
+
+// NewHandler builds a mirror Handler from Options, creating the staging
+// directory if needed.
+func NewHandler(opts Options) (*Handler, error) {
+	if opts.Metrics == nil {
+		opts.Metrics = NopMetrics{}
 	}
-	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+	if err := os.MkdirAll(opts.StagingDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mirror: create staging dir: %w", err)
 	}
-	return &Handler{cache: c, upstream: u, metrics: m, stagingDir: stagingDir, log: log}, nil
+	return &Handler{
+		cache:      opts.Cache,
+		upstream:   opts.Upstream,
+		metrics:    opts.Metrics,
+		stagingDir: opts.StagingDir,
+		indexTTL:   opts.IndexTTL,
+		now:        time.Now,
+		log:        opts.Logger,
+	}, nil
 }
 
 // Routes registers the mirror endpoints on a ServeMux. The caller owns the mux
@@ -83,30 +110,94 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}", h.handleZip)
 }
 
+// handleVersions serves the versions index with TTL-based revalidation. Unlike
+// archives and zips (immutable per version), the versions list grows over time,
+// so a cached copy older than indexTTL is revalidated against upstream. If
+// upstream is unreachable during revalidation, the last-known-good copy is
+// served stale — the mirror's whole point is to survive registry outages.
 func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 	c, err := ValidateProvider(r.PathValue("hostname"), r.PathValue("namespace"), r.PathValue("type"))
 	if err != nil {
 		h.fail(w, r, http.StatusBadRequest, err)
 		return
 	}
-
 	key := VersionsCacheKey(c)
-	if h.serveFromCache(w, r, key, "versions", "application/json") {
+
+	cachedBody, fetchedAt, cacheHit := h.loadVersions(r.Context(), key)
+	if cacheHit && h.versionsFresh(fetchedAt) {
+		h.metrics.CacheLookup("versions", true)
+		writeBody(w, "application/json", "HIT", cachedBody)
 		return
 	}
 
-	versions, err := h.upstream.ListVersions(r.Context(), c)
+	// Stale or absent: (re)validate against upstream.
+	body, err := h.fetchVersions(r.Context(), c)
 	if err != nil {
+		// Serve a stale-but-present copy on a transient upstream failure; a
+		// definitive 404 (provider removed) is passed through instead.
+		if !errors.Is(err, ErrNotFound) && cacheHit && len(cachedBody) > 0 {
+			h.metrics.CacheLookup("versions", true)
+			h.log.Warn("serving stale versions index after upstream failure", "key", key, "err", err)
+			writeBody(w, "application/json", "STALE", cachedBody)
+			return
+		}
+		h.metrics.CacheLookup("versions", false)
 		h.failUpstream(w, r, err)
 		return
 	}
-	body, err := json.Marshal(BuildVersionsIndex(versions))
+
+	h.metrics.CacheLookup("versions", false)
+	h.storeVersions(r.Context(), key, body)
+	writeBody(w, "application/json", "MISS", body)
+}
+
+// versionsFresh reports whether a versions index fetched at fetchedAt is still
+// within the TTL. A non-positive TTL disables expiry (always fresh).
+func (h *Handler) versionsFresh(fetchedAt time.Time) bool {
+	if h.indexTTL <= 0 {
+		return true
+	}
+	return h.now().Sub(fetchedAt) < h.indexTTL
+}
+
+// loadVersions reads and unwraps a cached versions envelope. Any cache or
+// decode error is treated as a miss (the cache is never a hard dependency).
+func (h *Handler) loadVersions(ctx context.Context, key string) (body []byte, fetchedAt time.Time, hit bool) {
+	rc, found, err := h.cache.Get(ctx, key)
 	if err != nil {
-		h.fail(w, r, http.StatusInternalServerError, err)
+		h.log.Warn("cache read failed", "key", key, "err", err)
+		return nil, time.Time{}, false
+	}
+	if !found {
+		return nil, time.Time{}, false
+	}
+	defer func() { _ = rc.Close() }()
+
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		h.log.Warn("cache read failed", "key", key, "err", err)
+		return nil, time.Time{}, false
+	}
+	return unwrapVersions(raw)
+}
+
+// fetchVersions retrieves and builds the mirror versions index from upstream.
+func (h *Handler) fetchVersions(ctx context.Context, c Coordinates) ([]byte, error) {
+	versions, err := h.upstream.ListVersions(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(BuildVersionsIndex(versions))
+}
+
+// storeVersions caches the versions body wrapped in a freshness envelope.
+func (h *Handler) storeVersions(ctx context.Context, key string, body []byte) {
+	enveloped, err := wrapVersions(body, h.now())
+	if err != nil {
+		h.log.Warn("versions envelope marshal failed", "key", key, "err", err)
 		return
 	}
-	h.store(r.Context(), key, body)
-	writeCached(w, "application/json", false, body)
+	h.store(ctx, key, enveloped)
 }
 
 func (h *Handler) handleArchives(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +247,7 @@ func (h *Handler) handleArchives(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.store(r.Context(), key, body)
-	writeCached(w, "application/json", false, body)
+	writeBody(w, "application/json", "MISS", body)
 }
 
 func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
@@ -300,13 +391,11 @@ func (h *Handler) store(ctx context.Context, key string, data []byte) {
 	}
 }
 
-func writeCached(w http.ResponseWriter, contentType string, hit bool, body []byte) {
+// writeBody writes an in-memory response with a content type and an explicit
+// X-Cache status (HIT, MISS, or STALE).
+func writeBody(w http.ResponseWriter, contentType, cacheStatus string, body []byte) {
 	w.Header().Set("Content-Type", contentType)
-	if hit {
-		w.Header().Set("X-Cache", "HIT")
-	} else {
-		w.Header().Set("X-Cache", "MISS")
-	}
+	w.Header().Set("X-Cache", cacheStatus)
 	_, _ = w.Write(body)
 }
 

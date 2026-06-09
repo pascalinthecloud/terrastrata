@@ -16,6 +16,8 @@ config:
   listenAddr: ":8080"
   upstreamBase: "https://registry.terraform.io"
   logLevel: "info"
+  # Versions-index freshness window (Go duration); "0" disables expiry.
+  indexTTL: "10m"
 
 # Optional bearer-token auth on mirror endpoints.
 # When auth.existingSecret is set, the token is read from it (key: AUTH_TOKEN);

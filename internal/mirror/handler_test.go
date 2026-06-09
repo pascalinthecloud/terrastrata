@@ -68,13 +68,25 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 
 func newTestHandler(t *testing.T, base string) *Handler {
 	t.Helper()
+	return newTestHandlerTTL(t, base, 0)
+}
+
+func newTestHandlerTTL(t *testing.T, base string, ttl time.Duration) *Handler {
+	t.Helper()
 	c, err := cache.NewLocal(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	u := NewUpstream(base, "terrastrata-test", 5*time.Second)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h, err := NewHandler(c, u, NopMetrics{}, t.TempDir(), log)
+	h, err := NewHandler(Options{
+		Cache:      c,
+		Upstream:   u,
+		Metrics:    NopMetrics{},
+		StagingDir: t.TempDir(),
+		IndexTTL:   ttl,
+		Logger:     log,
+	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -238,6 +250,113 @@ func TestZipMissingUpstreamChecksumIsRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 when upstream provides no checksum", resp.StatusCode)
+	}
+}
+
+func TestVersionsIndexTTLRevalidatesWhenStale(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandlerTTL(t, reg.server.URL, 1*time.Minute)
+
+	clock := time.Now()
+	h.now = func() time.Time { return clock } // deterministic time
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const path = "/registry.terraform.io/hashicorp/null/index.json"
+
+	// 1. Cold: MISS, one upstream call.
+	resp := doGet(t, ts, path)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got != "MISS" {
+		t.Fatalf("first X-Cache = %q, want MISS", got)
+	}
+	afterCold := reg.hits.Load()
+
+	// 2. Within TTL: HIT, no upstream call.
+	clock = clock.Add(30 * time.Second)
+	resp = doGet(t, ts, path)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got != "HIT" {
+		t.Errorf("within-TTL X-Cache = %q, want HIT", got)
+	}
+	if reg.hits.Load() != afterCold {
+		t.Error("within-TTL request should not hit upstream")
+	}
+
+	// 3. Past TTL: revalidate — MISS again, a fresh upstream call.
+	clock = clock.Add(2 * time.Minute)
+	resp = doGet(t, ts, path)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got != "MISS" {
+		t.Errorf("past-TTL X-Cache = %q, want MISS (revalidated)", got)
+	}
+	if reg.hits.Load() <= afterCold {
+		t.Error("past-TTL request should revalidate against upstream")
+	}
+}
+
+func TestVersionsIndexServedStaleOnUpstreamFailure(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandlerTTL(t, reg.server.URL, 1*time.Minute)
+	clock := time.Now()
+	h.now = func() time.Time { return clock }
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const path = "/registry.terraform.io/hashicorp/null/index.json"
+
+	// Prime the cache.
+	doGet(t, ts, path).Body.Close()
+
+	// Upstream goes away, and the cached copy expires.
+	reg.server.Close()
+	clock = clock.Add(2 * time.Minute)
+
+	resp := doGet(t, ts, path)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stale serve status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Cache"); got != "STALE" {
+		t.Errorf("X-Cache = %q, want STALE", got)
+	}
+	var stale VersionsIndex
+	decode(t, resp, &stale)
+	if _, ok := stale.Versions["3.2.0"]; !ok {
+		t.Errorf("stale body missing expected versions: %+v", stale.Versions)
+	}
+}
+
+func TestVersionsIndexTTLDisabledNeverRevalidates(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandlerTTL(t, reg.server.URL, 0) // disabled
+	clock := time.Now()
+	h.now = func() time.Time { return clock }
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const path = "/registry.terraform.io/hashicorp/null/index.json"
+	resp := doGet(t, ts, path)
+	resp.Body.Close()
+	afterCold := reg.hits.Load()
+
+	// Even far in the future, a disabled TTL keeps serving the cached copy.
+	clock = clock.Add(1000 * time.Hour)
+	resp = doGet(t, ts, path)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got != "HIT" {
+		t.Errorf("disabled-TTL X-Cache = %q, want HIT", got)
+	}
+	if reg.hits.Load() != afterCold {
+		t.Error("disabled TTL should never revalidate")
 	}
 }
 

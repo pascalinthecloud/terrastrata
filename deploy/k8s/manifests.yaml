@@ -82,6 +82,8 @@ spec:
               value: "/cache"
             - name: LOG_LEVEL
               value: "info"
+            - name: INDEX_TTL # versions-index freshness window; "0" disables expiry
+              value: "10m"
             # --- Optional S3 durable cache ---
             # - name: S3_BUCKET
             #   value: "tf-mirror"

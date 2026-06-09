@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func TestFromEnvDefaults(t *testing.T) {
@@ -31,6 +32,45 @@ func TestFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.S3.Enabled() {
 		t.Error("S3 should be disabled by default")
+	}
+	if cfg.IndexTTL != DefaultIndexTTL {
+		t.Errorf("IndexTTL = %v, want %v", cfg.IndexTTL, DefaultIndexTTL)
+	}
+}
+
+func TestFromEnvIndexTTL(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("INDEX_TTL", "30m")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.IndexTTL != 30*time.Minute {
+		t.Errorf("IndexTTL = %v, want 30m", cfg.IndexTTL)
+	}
+}
+
+func TestFromEnvIndexTTLDisabled(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("INDEX_TTL", "0")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.IndexTTL != 0 {
+		t.Errorf("IndexTTL = %v, want 0 (disabled)", cfg.IndexTTL)
+	}
+}
+
+func TestFromEnvIndexTTLInvalid(t *testing.T) {
+	for _, v := range []string{"soon", "-5m"} {
+		t.Run(v, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("INDEX_TTL", v)
+			if _, err := FromEnv(); err == nil {
+				t.Fatalf("expected error for INDEX_TTL=%q", v)
+			}
+		})
 	}
 }
 
