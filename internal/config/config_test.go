@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 )
@@ -173,6 +174,39 @@ func TestFromEnvInvalidLogLevel(t *testing.T) {
 	}
 }
 
+func TestFromEnvPrewarmDefaults(t *testing.T) {
+	clearEnv(t)
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if len(cfg.PrewarmProviders) != 0 {
+		t.Errorf("PrewarmProviders = %v, want empty", cfg.PrewarmProviders)
+	}
+	// Platforms default even when providers are empty (harmless).
+	if len(cfg.PrewarmPlatforms) != 1 || cfg.PrewarmPlatforms[0] != DefaultPrewarmPlatform {
+		t.Errorf("PrewarmPlatforms = %v, want [%s]", cfg.PrewarmPlatforms, DefaultPrewarmPlatform)
+	}
+}
+
+func TestFromEnvPrewarmParsing(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("PREWARM_PROVIDERS", " hashicorp/azurerm@3.110.0 , hashicorp/null ,, ")
+	t.Setenv("PREWARM_PLATFORMS", "linux_amd64, darwin_arm64")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	wantProviders := []string{"hashicorp/azurerm@3.110.0", "hashicorp/null"}
+	if !slices.Equal(cfg.PrewarmProviders, wantProviders) {
+		t.Errorf("PrewarmProviders = %v, want %v", cfg.PrewarmProviders, wantProviders)
+	}
+	wantPlatforms := []string{"linux_amd64", "darwin_arm64"}
+	if !slices.Equal(cfg.PrewarmPlatforms, wantPlatforms) {
+		t.Errorf("PrewarmPlatforms = %v, want %v", cfg.PrewarmPlatforms, wantPlatforms)
+	}
+}
+
 func TestParseLogLevel(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug": slog.LevelDebug,
@@ -197,8 +231,9 @@ func TestParseLogLevel(t *testing.T) {
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"LISTEN_ADDR", "CACHE_DIR", "UPSTREAM_BASE", "AUTH_TOKEN", "LOG_LEVEL",
+		"LISTEN_ADDR", "CACHE_DIR", "UPSTREAM_BASE", "AUTH_TOKEN", "LOG_LEVEL", "INDEX_TTL",
 		"S3_BUCKET", "S3_PREFIX", "S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY",
+		"PREWARM_PROVIDERS", "PREWARM_PLATFORMS",
 	} {
 		t.Setenv(k, "")
 	}

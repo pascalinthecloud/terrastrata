@@ -84,6 +84,11 @@ spec:
               value: "info"
             - name: INDEX_TTL # versions-index freshness window; "0" disables expiry
               value: "10m"
+            # --- Optional startup cache pre-warming ---
+            # - name: PREWARM_PROVIDERS # [host/]ns/type[@version], comma-separated
+            #   value: "hashicorp/azurerm@3.110.0,hashicorp/null"
+            # - name: PREWARM_PLATFORMS
+            #   value: "linux_amd64"
             # --- Optional S3 durable cache ---
             # - name: S3_BUCKET
             #   value: "tf-mirror"

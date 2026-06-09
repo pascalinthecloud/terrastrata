@@ -26,6 +26,9 @@ const (
 	DefaultS3Region     = "us-east-1"
 	DefaultLogLevel     = "info"
 
+	// DefaultPrewarmPlatform is the os_arch warmed when PREWARM_PLATFORMS is unset.
+	DefaultPrewarmPlatform = "linux_amd64"
+
 	// DefaultUpstreamTimeout bounds a single upstream registry request. Provider
 	// zips are tens of MB, so this is generous without being unbounded.
 	DefaultUpstreamTimeout = 60 * time.Second
@@ -54,6 +57,14 @@ type Config struct {
 	// IndexTTL is the freshness window for the versions index. Zero disables
 	// expiry (cache forever).
 	IndexTTL time.Duration
+
+	// PrewarmProviders lists providers to warm into the cache at startup. Each
+	// entry is "[host/]namespace/type[@version]"; a bare provider warms only its
+	// versions index, while an @version also warms that version's archives and
+	// zips (for PrewarmPlatforms). Empty disables pre-warming.
+	PrewarmProviders []string
+	// PrewarmPlatforms is the os_arch list to warm zips for (default linux_amd64).
+	PrewarmPlatforms []string
 
 	S3 S3Config
 }
@@ -103,6 +114,12 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.IndexTTL = ttl
+
+	cfg.PrewarmProviders = splitList(os.Getenv("PREWARM_PROVIDERS"))
+	cfg.PrewarmPlatforms = splitList(os.Getenv("PREWARM_PLATFORMS"))
+	if len(cfg.PrewarmPlatforms) == 0 {
+		cfg.PrewarmPlatforms = []string{DefaultPrewarmPlatform}
+	}
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -172,6 +189,21 @@ func (c Config) validate() error {
 	}
 
 	return nil
+}
+
+// splitList parses a comma-separated environment value into a trimmed,
+// empty-free slice. An empty input yields a nil slice.
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {
