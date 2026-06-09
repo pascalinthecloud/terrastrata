@@ -134,14 +134,17 @@ func hashesFor(shasum string) []string {
 // Cache key helpers. These derive deterministic, slash-delimited keys from
 // already-validated coordinates, mirroring the protocol's directory layout.
 
+// VersionsCacheKey is the cache key for a provider's versions index.
 func VersionsCacheKey(c Coordinates) string {
 	return fmt.Sprintf("%s/%s/%s/index.json", c.Hostname, c.Namespace, c.Type)
 }
 
+// ArchivesCacheKey is the cache key for a version's archives index.
 func ArchivesCacheKey(c Coordinates) string {
 	return fmt.Sprintf("%s/%s/%s/%s.json", c.Hostname, c.Namespace, c.Type, c.Version)
 }
 
+// ZipCacheKey is the cache key for a provider archive (zip).
 func ZipCacheKey(c Coordinates) string {
 	return fmt.Sprintf("%s/%s/%s/%s/download/%s/%s",
 		c.Hostname, c.Namespace, c.Type, c.Version, c.Platform, c.Filename)

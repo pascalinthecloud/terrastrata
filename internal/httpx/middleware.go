@@ -40,11 +40,13 @@ func NewResponseRecorder(w http.ResponseWriter) *ResponseRecorder {
 	return &ResponseRecorder{ResponseWriter: w, Status: http.StatusOK}
 }
 
+// WriteHeader records the status code and forwards it to the underlying writer.
 func (r *ResponseRecorder) WriteHeader(code int) {
 	r.Status = code
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Write records the byte count and forwards to the underlying writer.
 func (r *ResponseRecorder) Write(b []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(b)
 	r.Bytes += n

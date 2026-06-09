@@ -21,7 +21,7 @@ func NewLocal(dir string) (*Local, error) {
 	if dir == "" {
 		return nil, errors.New("cache: local root directory must not be empty")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("cache: create local root: %w", err)
 	}
 	abs, err := filepath.Abs(dir)
@@ -49,7 +49,8 @@ func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, bool, error) 
 	if err != nil {
 		return nil, false, err
 	}
-	f, err := os.Open(path)
+	// path is constrained to the cache root by resolve(); not user-arbitrary.
+	f, err := os.Open(path) //nolint:gosec // G304: path contained within cache root
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
@@ -67,7 +68,7 @@ func (l *Local) Put(_ context.Context, key string, data []byte) error {
 		return err
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("cache: create dir for %q: %w", key, err)
 	}
 

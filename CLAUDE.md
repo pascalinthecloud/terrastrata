@@ -47,11 +47,12 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**
 
 | Layer | Choice |
 |---|---|
-| Language | Go 1.22 |
+| Language | Go 1.26 (stdlib-first: `net/http` ServeMux, `log/slog`) |
 | S3 client | AWS SDK v2 (`github.com/aws/aws-sdk-go-v2`) |
-| Container | Alpine 3.19, multi-stage build |
-| Deployment | Kubernetes (manifests in `k8s/manifests.yaml`) |
-| Protocol | Terraform Network Mirror Protocol (HTTP/JSON) |
+| Metrics | Prometheus client (`github.com/prometheus/client_golang`) |
+| Container | Multi-stage build, distroless static (nonroot) runtime |
+| Deployment | Kubernetes manifests (`deploy/k8s/manifests.yaml`) + Helm chart (`deploy/helm/terrastrata`) |
+| Protocol | Terraform Provider Network Mirror Protocol (HTTP/JSON) |
 
 ---
 
@@ -59,22 +60,32 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**
 
 ```
 .
-├── main.go                  # Main application — proxy, cache, mirror protocol
-├── go.mod                   # Go module definition
-├── go.sum                   # Dependency checksums
-├── Dockerfile               # Multi-stage container build
-├── k8s/
-│   └── manifests.yaml       # Namespace, Secret, PVC, Deployment, Service
+├── cmd/terrastrata/main.go  # Entrypoint: wiring, hardened server, graceful shutdown
+├── internal/
+│   ├── config/              # Env-driven Config + validation
+│   ├── cache/               # Two-layer cache: local FS, S3, Layered composition
+│   ├── mirror/              # Protocol: paths, upstream client, translation, handler
+│   ├── httpx/               # Middleware: request-id, logging, recovery, bearer auth
+│   └── observ/              # slog logger + Prometheus metrics
+├── go.mod / go.sum          # Module definition + checksums
+├── Dockerfile               # Multi-stage container build (distroless runtime)
+├── Makefile                 # build / test / lint / vuln / docker targets
+├── deploy/
+│   ├── k8s/manifests.yaml   # Namespace, (Secret), PVC, Deployment, Service
+│   └── helm/terrastrata/    # Helm chart
+├── .github/workflows/ci.yml # test, lint, govulncheck, image build + Trivy scan
 ├── README.md                # User-facing documentation
 └── CLAUDE.md                # This file
 ```
 
 ---
 
-## Key components (main.go)
+## Key components
 
-### `Config`
-All configuration via environment variables. Constructed by `configFromEnv()`.
+### `internal/config`
+All configuration via environment variables. Constructed by `config.FromEnv()`,
+which applies defaults and **fails fast** on inconsistent input (e.g. `S3_BUCKET`
+set without credentials).
 
 | Variable | Default | Description |
 |---|---|---|
@@ -87,33 +98,42 @@ All configuration via environment variables. Constructed by `configFromEnv()`.
 | `S3_REGION` | `us-east-1` | S3 region |
 | `S3_ACCESS_KEY` | _(empty)_ | S3 credentials |
 | `S3_SECRET_KEY` | _(empty)_ | S3 credentials |
+| `AUTH_TOKEN` | _(empty)_ | Optional bearer token on mirror endpoints; empty = auth disabled |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
-### `Cache`
-Two-layer cache abstraction:
-- `Get(ctx, key)` — checks local filesystem first, then S3 (if enabled), returns `nil` on miss
-- `Put(ctx, key, data, contentType)` — writes to local filesystem synchronously, S3 asynchronously in a goroutine
-- S3 is entirely optional — if `S3_BUCKET` is empty, `newS3Client()` returns `nil` and all S3 paths are skipped
+### `internal/cache`
+- `Cache` interface: `Get(ctx, key) (io.ReadCloser, bool, error)` and `Put(ctx, key, data)`.
+- `Local` — atomic filesystem store (temp-file + rename); contains all keys within the cache root.
+- `S3` — AWS SDK v2 backend; path-style addressing for custom endpoints (MinIO/OVH).
+- `Layered` — composes local → S3: `Get` warms the local layer on an S3 hit; `Put`
+  writes local synchronously and S3 asynchronously. A nil durable layer is handled
+  transparently (local-only mode).
 
-### `ProxyHandler`
-Implements `http.Handler`. Routes:
-- `GET /health` — liveness/readiness probe
-- `GET /:hostname/:namespace/:type/index.json` — provider versions list
-- `GET /:hostname/:namespace/:type/:version/download/:platform/index.json` — per-version download metadata
-- `GET /:hostname/:namespace/:type/:version/download/:platform/*.zip` — provider zip binary
+### `internal/mirror`
+- `paths.go` — strict validation of every request coordinate (traversal-proof); the cache's first line of defense.
+- `upstream.go` — registry-protocol client (`/v1/providers/...`) with transport-level timeouts and bounded response bodies.
+- `protocol.go` — translation from registry responses to mirror responses, concurrent (bounded) archives assembly, cache-key helpers.
+- `handler.go` — `http.Handler` over a `ServeMux`. Routes:
+  - `GET /:hostname/:namespace/:type/index.json` — versions index
+  - `GET /:hostname/:namespace/:type/:version.json` — archives index
+  - `GET /:hostname/:namespace/:type/:version/download/:platform/:filename` — provider zip
+  - Sets `X-Cache: HIT|MISS`; verifies the registry SHA-256 before caching a zip; treats the cache as best-effort (never a hard dependency).
 
-Key methods:
-- `upstreamURL(mirrorPath)` — maps mirror protocol paths back to registry API endpoints
-- `rewriteVersionsIndex(body)` — converts registry `/versions` response to mirror protocol format
-- `rewriteDownloadIndex(body, r, path)` — converts registry `/download` response to mirror protocol format, rewrites zip URLs to point at terrastrata itself
-- `prefetchZip(downloadURL, cacheKey)` — async goroutine that pre-fetches and caches the zip when a download index is requested
+### `internal/httpx` and `internal/observ`
+Cross-cutting HTTP middleware (request-id, structured access logging, panic
+recovery, optional constant-time bearer auth) and observability (JSON `slog`
+logger + Prometheus registry with `/metrics`). `/health` and `/metrics` are
+unauthenticated; mirror routes sit behind optional auth.
 
 ---
 
 ## Terraform Network Mirror Protocol
 
-terrastrata implements the [network mirror protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol). Key endpoint shapes:
+terrastrata implements the [network mirror protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol),
+which has exactly **two** read endpoints (do not confuse with the richer
+*registry* protocol — that distinction is the source of a common bug here):
 
-**Versions index** (`/:hostname/:namespace/:type/index.json`):
+**1. Versions index** (`GET /:hostname/:namespace/:type/index.json`):
 ```json
 {
   "versions": {
@@ -123,17 +143,29 @@ terrastrata implements the [network mirror protocol](https://developer.hashicorp
 }
 ```
 
-**Download index** (`/:hostname/:namespace/:type/:version/download/:platform/index.json`):
+**2. Archives index** (`GET /:hostname/:namespace/:type/:version.json`):
 ```json
 {
   "archives": {
     "linux_amd64": {
-      "url": "https://terrastrata.internal/registry.terraform.io/hashicorp/azurerm/3.110.0/download/linux_amd64/terraform-provider-azurerm_3.110.0_linux_amd64.zip",
+      "url": "3.110.0/download/linux_amd64/terraform-provider-azurerm_3.110.0_linux_amd64.zip",
       "hashes": ["zh:abc123..."]
     }
   }
 }
 ```
+
+The archive `url` is **relative to the `<version>.json` document's URL**.
+terrastrata rewrites it to a self-hosted relative path that encodes os/arch
+(`:version/download/:os_:arch/:filename.zip`), so the actual zip is served and
+cached by terrastrata at:
+
+**3. Zip** (`GET /:hostname/:namespace/:type/:version/download/:platform/:filename`)
+
+On a cache miss, terrastrata translates these to the upstream **registry**
+protocol: `index.json` → `/v1/providers/:ns/:type/versions`, and each archive →
+`/v1/providers/:ns/:type/:version/download/:os/:arch` (yielding `download_url`,
+`shasum`, `filename`).
 
 ---
 
@@ -144,11 +176,11 @@ terrastrata implements the [network mirror protocol](https://developer.hashicorp
 └── registry.terraform.io/
     └── hashicorp/
         └── azurerm/
-            ├── index.json
+            ├── index.json                  # versions index
+            ├── 3.110.0.json                # archives index for 3.110.0
             └── 3.110.0/
                 └── download/
                     └── linux_amd64/
-                        ├── index.json
                         └── terraform-provider-azurerm_3.110.0_linux_amd64.zip
 ```
 
@@ -183,10 +215,8 @@ provider_installation {
 
 - No cache eviction or TTL for `index.json` — versions list can go stale
 - No pre-warm on startup — cache is cold until providers are first requested
-- No Prometheus metrics endpoint yet
-- No Helm chart yet
 - Only provider mirror protocol supported — no module registry protocol
-- Replicas limited to 1 with RWO PVC
+- Replicas limited to 1 with RWO PVC (use S3-only / RWX for HA)
 
 ---
 
@@ -194,9 +224,9 @@ provider_installation {
 
 - [ ] Cache eviction / TTL for index.json
 - [ ] Pre-warm mode: seed cache from a provider list on startup
-- [ ] Prometheus metrics endpoint
-- [ ] Helm chart
 - [ ] Support for module registry protocol
+- [x] Prometheus metrics endpoint
+- [x] Helm chart
 
 ---
 
@@ -205,4 +235,7 @@ provider_installation {
 - Kubernetes cluster (existing, internal)
 - OVH Object Storage as S3 backend (`s3.de.io.cloud.ovh.net`, region `de`)
 - Azure DevOps self-hosted agents as Terraform clients
-- Internal network only — no external auth required
+- Internal network only — no external auth required by default. Optional
+  `AUTH_TOKEN` bearer auth exists, but Terraform's `network_mirror` client does
+  not send auth headers, so it is only useful behind a header-injecting gateway
+  or for non-Terraform consumers; network policy remains the primary boundary.

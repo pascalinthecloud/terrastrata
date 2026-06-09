@@ -116,7 +116,7 @@ func (u *Upstream) FetchZip(ctx context.Context, downloadURL string) (io.ReadClo
 		return nil, fmt.Errorf("upstream: fetch zip: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("upstream: fetch zip: unexpected status %s", resp.Status)
 	}
 	return resp.Body, nil
@@ -137,7 +137,7 @@ func (u *Upstream) getJSON(ctx context.Context, endpoint string, dst any) error 
 	if err != nil {
 		return fmt.Errorf("upstream: GET %s: %w", endpoint, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

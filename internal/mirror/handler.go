@@ -1,3 +1,7 @@
+// Package mirror implements the Terraform provider network mirror protocol as a
+// pull-through cache over an upstream provider registry. It validates request
+// coordinates, translates registry responses into mirror responses, and serves
+// provider archives from the cache, fetching from upstream on a miss.
 package mirror
 
 import (
@@ -27,6 +31,7 @@ type Metrics interface {
 // NopMetrics is a no-op Metrics.
 type NopMetrics struct{}
 
+// CacheLookup implements Metrics and does nothing.
 func (NopMetrics) CacheLookup(string, bool) {}
 
 // Handler serves the Terraform provider network mirror protocol, backed by a
@@ -177,7 +182,7 @@ func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
 		h.failUpstream(w, r, err)
 		return
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(rc, maxZipBytes))
 	if err != nil {
@@ -212,7 +217,7 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, key, re
 	if !hit {
 		return false
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Cache", "HIT")

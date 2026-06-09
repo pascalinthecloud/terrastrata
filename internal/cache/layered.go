@@ -87,6 +87,8 @@ func (l *Layered) Put(ctx context.Context, key string, data []byte) error {
 	// Copy because the caller may reuse the buffer once Put returns.
 	buf := make([]byte, len(data))
 	copy(buf, data)
+	//nolint:gosec // G118: detached context is intentional — the durable upload
+	// must outlive the originating request.
 	go l.putDurable(key, buf)
 	return nil
 }
