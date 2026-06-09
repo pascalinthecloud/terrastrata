@@ -1,0 +1,172 @@
+# terrastrata
+
+> Pull-through Terraform provider cache registry
+
+**terrastrata** is a lightweight self-hosted proxy that implements the [Terraform Network Mirror Protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol). It fetches providers from the public registry on demand, caches them locally and in S3-compatible object storage, and serves subsequent requests entirely from cache — no repeated upstream calls, no internet dependency after first use.
+
+---
+
+## Why
+
+- You are tired of GitHub outages causing terraform init to fail mid-pipeline for no reason on your end
+- Your CI/CD agents run in an isolated or bandwidth-constrained network
+- `registry.terraform.io` is slow, rate-limited, or simply unreachable
+- You want reproducible `terraform init` without pinning provider zips manually
+- You need a durable provider cache that survives pod restarts
+
+---
+
+## How it works
+
+```
+terraform init
+      │
+      ▼
+ terrastrata
+      │  cache HIT  → serve from local volume
+      │  cache MISS → fetch from registry.terraform.io
+      │               ├─ write to local PVC  (fast, ephemeral)
+      │               └─ async write to S3   (durable, survives restarts)
+      ▼
+registry.terraform.io   (only on first request per version)
+```
+
+Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. When S3 is enabled, it automatically warms the local volume on pod restart so nothing is re-fetched from the internet. Without S3, only the local PVC is used.
+
+---
+
+## Features
+
+- Implements the Terraform Network Mirror Protocol — drop-in replacement, no Terraform changes needed
+- Pull-through: providers are fetched and cached on first use, never pre-downloaded
+- Dual-layer cache: local filesystem (fast) + optional S3-compatible object storage (durable)
+- When S3 is enabled, works with any S3-compatible backend: AWS S3, OVH Object Storage, MinIO, Azure Blob (via gateway)
+- Kubernetes-native: ships with manifests and a lightweight container image
+- Zero auth required for internal network deployments
+- `X-Cache: HIT/MISS` response headers for observability
+- `/health` endpoint for liveness/readiness probes
+
+---
+
+## Quick start
+
+### 1. Deploy to Kubernetes
+
+```bash
+# Fill in your S3 credentials in k8s/manifests.yaml first
+kubectl apply -f k8s/manifests.yaml
+```
+
+### 2. Configure Terraform agents
+
+Add to `~/.terraformrc` on each agent (or inject via CI pipeline):
+
+```hcl
+provider_installation {
+  network_mirror {
+    url     = "http://tf-mirror.tf-mirror.svc.cluster.local/"
+    include = ["registry.terraform.io/*/*"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/*/*"]
+  }
+}
+```
+
+### 3. Run `terraform init` as normal
+
+```bash
+terraform init
+# Initializing provider plugins...
+# - Installing hashicorp/azurerm v3.110.0 from http://terrastrata.internal/...
+```
+
+---
+
+## Configuration
+
+All configuration is via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `LISTEN_ADDR` | `:8080` | Address and port to listen on |
+| `CACHE_DIR` | `/cache` | Local filesystem cache directory |
+| `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry base URL |
+| `S3_BUCKET` | _(empty)_ | S3 bucket name. **Leave empty to disable S3** — local filesystem cache only |
+| `S3_PREFIX` | `tf-mirror` | Key prefix within the S3 bucket |
+| `S3_ENDPOINT` | _(empty)_ | Custom S3 endpoint (OVH, MinIO, etc.) |
+| `S3_REGION` | `us-east-1` | S3 region |
+| `S3_ACCESS_KEY` | _(empty)_ | S3 access key |
+| `S3_SECRET_KEY` | _(empty)_ | S3 secret key |
+
+### OVH Object Storage example
+
+```yaml
+- name: S3_ENDPOINT
+  value: "https://s3.de.io.cloud.ovh.net"
+- name: S3_REGION
+  value: "de"
+- name: S3_BUCKET
+  value: "tf-mirror"
+```
+
+---
+
+## Building
+
+```bash
+# Build binary
+go build -o terrastrata .
+
+# Build container image
+docker build -t your-registry/terrastrata:latest .
+
+# Push
+docker push your-registry/terrastrata:latest
+```
+
+---
+
+## Cache structure
+
+terrastrata stores artifacts in the Terraform Network Mirror Protocol directory layout:
+
+```
+cache/
+└── registry.terraform.io/
+    └── hashicorp/
+        └── azurerm/
+            ├── index.json                         # versions list
+            └── 3.110.0/
+                └── download/
+                    └── linux_amd64/
+                        ├── index.json             # download metadata
+                        └── terraform-provider-azurerm_3.110.0_linux_amd64.zip
+```
+
+The same structure is mirrored under your configured S3 prefix.
+
+---
+
+## Kubernetes notes
+
+- **Replicas: 1** — the default PVC uses `ReadWriteOnce`. For HA, switch to `ReadWriteMany` or disable the local PVC and rely on S3 only.
+- **PVC size** — `20Gi` default. `hashicorp/azurerm` alone can reach 30–50 GB if all versions are cached. Size accordingly or implement a cache eviction strategy.
+- **TLS** — terrastrata serves plain HTTP internally. Terminate TLS at your Ingress or Gateway controller.
+- **Ingress** — an example Ingress resource is included (commented out) in `k8s/manifests.yaml`.
+
+---
+
+## Roadmap
+
+- [ ] Cache eviction / TTL for index.json (versions list)
+- [ ] Pre-warm mode: seed cache from a provider list on startup
+- [ ] Prometheus metrics endpoint
+- [ ] Helm chart
+- [ ] Support for module registry protocol
+
+---
+
+## License
+
+Apache 2.0
