@@ -180,8 +180,14 @@ structure is mirrored under your configured S3 prefix.
 ## Observability
 
 - `GET /health` — liveness/readiness probe (always unauthenticated)
-- `GET /metrics` — Prometheus metrics (cache hit/miss by resource, HTTP request
-  counts and latency by route)
+- `GET /metrics` — Prometheus metrics (always unauthenticated), including:
+  - `terrastrata_cache_lookups_total{resource,result}` — cache hit/miss by resource
+  - `terrastrata_http_requests_total{route,code}` and `terrastrata_http_request_duration_seconds{route}`
+  - `terrastrata_versions_index_total{outcome}` — versions-index freshness:
+    `fresh` (within TTL), `revalidated` (refetched), `stale` (served after an
+    upstream failure — **alert on a rising rate here**), `error` (no fallback)
+  - `terrastrata_prewarm_total{resource,result}` — startup pre-warm successes/failures
+  - plus standard Go runtime and process collectors
 - Structured JSON access logs on stdout, one line per request, with a
   per-request `X-Request-Id`
 

@@ -32,13 +32,29 @@ type Metrics interface {
 	// CacheLookup records whether a lookup for the given resource kind
 	// ("versions", "archives", "zip") hit the cache.
 	CacheLookup(resource string, hit bool)
+	// VersionsIndexOutcome records how a versions-index request was satisfied:
+	// "fresh" (served within TTL), "revalidated" (refetched from upstream),
+	// "stale" (served last-known-good after an upstream failure), or "error"
+	// (upstream failed with no cached copy to fall back on).
+	VersionsIndexOutcome(outcome string)
 }
+
+// Versions-index outcome labels.
+const (
+	outcomeFresh       = "fresh"
+	outcomeRevalidated = "revalidated"
+	outcomeStale       = "stale"
+	outcomeError       = "error"
+)
 
 // NopMetrics is a no-op Metrics.
 type NopMetrics struct{}
 
 // CacheLookup implements Metrics and does nothing.
 func (NopMetrics) CacheLookup(string, bool) {}
+
+// VersionsIndexOutcome implements Metrics and does nothing.
+func (NopMetrics) VersionsIndexOutcome(string) {}
 
 // Handler serves the Terraform provider network mirror protocol, backed by a
 // pull-through cache over an upstream provider registry.
@@ -126,6 +142,7 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 	cachedBody, fetchedAt, cacheHit := h.loadVersions(r.Context(), key)
 	if cacheHit && h.versionsFresh(fetchedAt) {
 		h.metrics.CacheLookup("versions", true)
+		h.metrics.VersionsIndexOutcome(outcomeFresh)
 		writeBody(w, "application/json", "HIT", cachedBody)
 		return
 	}
@@ -137,16 +154,19 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 		// definitive 404 (provider removed) is passed through instead.
 		if !errors.Is(err, ErrNotFound) && cacheHit && len(cachedBody) > 0 {
 			h.metrics.CacheLookup("versions", true)
+			h.metrics.VersionsIndexOutcome(outcomeStale)
 			h.log.Warn("serving stale versions index after upstream failure", "key", key, "err", err)
 			writeBody(w, "application/json", "STALE", cachedBody)
 			return
 		}
 		h.metrics.CacheLookup("versions", false)
+		h.metrics.VersionsIndexOutcome(outcomeError)
 		h.failUpstream(w, r, err)
 		return
 	}
 
 	h.metrics.CacheLookup("versions", false)
+	h.metrics.VersionsIndexOutcome(outcomeRevalidated)
 	h.storeVersions(r.Context(), key, body)
 	writeBody(w, "application/json", "MISS", body)
 }

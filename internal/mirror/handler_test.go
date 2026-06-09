@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -357,6 +358,53 @@ func TestVersionsIndexTTLDisabledNeverRevalidates(t *testing.T) {
 	}
 	if reg.hits.Load() != afterCold {
 		t.Error("disabled TTL should never revalidate")
+	}
+}
+
+// recordingMetrics counts versions-index outcomes for assertions.
+type recordingMetrics struct {
+	mu       sync.Mutex
+	outcomes map[string]int
+}
+
+func (m *recordingMetrics) CacheLookup(string, bool) {}
+
+func (m *recordingMetrics) VersionsIndexOutcome(outcome string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.outcomes[outcome]++
+}
+
+func TestVersionsIndexMetricsOutcomes(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandlerTTL(t, reg.server.URL, time.Minute)
+	rec := &recordingMetrics{outcomes: map[string]int{}}
+	h.metrics = rec
+	clock := time.Now()
+	h.now = func() time.Time { return clock }
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const path = "/registry.terraform.io/hashicorp/null/index.json"
+
+	doGet(t, ts, path).Body.Close() // cold absent -> revalidated
+	doGet(t, ts, path).Body.Close() // within TTL -> fresh
+
+	clock = clock.Add(2 * time.Minute)
+	doGet(t, ts, path).Body.Close() // stale -> revalidated
+
+	reg.server.Close() // upstream down
+	clock = clock.Add(2 * time.Minute)
+	doGet(t, ts, path).Body.Close() // stale + upstream down -> stale served
+
+	want := map[string]int{outcomeRevalidated: 2, outcomeFresh: 1, outcomeStale: 1}
+	for outcome, n := range want {
+		if rec.outcomes[outcome] != n {
+			t.Errorf("outcome %q = %d, want %d (all: %v)", outcome, rec.outcomes[outcome], n, rec.outcomes)
+		}
 	}
 }
 

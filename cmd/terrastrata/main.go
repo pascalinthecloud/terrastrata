@@ -104,7 +104,7 @@ func run() error {
 	if len(cfg.PrewarmProviders) > 0 {
 		mirrorMux := http.NewServeMux()
 		handler.Routes(mirrorMux)
-		go prewarm.Run(ctx, mirrorMux, cfg.PrewarmProviders, cfg.PrewarmPlatforms, logger)
+		go prewarm.Run(ctx, mirrorMux, cfg.PrewarmProviders, cfg.PrewarmPlatforms, metrics, logger)
 	}
 
 	return serve(ctx, srv, logger)

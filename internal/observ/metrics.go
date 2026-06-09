@@ -17,9 +17,11 @@ import (
 type Metrics struct {
 	registry *prometheus.Registry
 
-	cacheLookups *prometheus.CounterVec
-	httpRequests *prometheus.CounterVec
-	httpDuration *prometheus.HistogramVec
+	cacheLookups  *prometheus.CounterVec
+	httpRequests  *prometheus.CounterVec
+	httpDuration  *prometheus.HistogramVec
+	versionsIndex *prometheus.CounterVec
+	prewarm       *prometheus.CounterVec
 }
 
 // NewMetrics creates and registers terrastrata's collectors on a private
@@ -41,9 +43,17 @@ func NewMetrics() *Metrics {
 			Help:    "HTTP request duration by route.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"route"}),
+		versionsIndex: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "terrastrata_versions_index_total",
+			Help: "Versions-index requests by freshness outcome (fresh, revalidated, stale, error).",
+		}, []string{"outcome"}),
+		prewarm: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "terrastrata_prewarm_total",
+			Help: "Startup pre-warm operations by resource and result.",
+		}, []string{"resource", "result"}),
 	}
 	reg.MustRegister(
-		m.cacheLookups, m.httpRequests, m.httpDuration,
+		m.cacheLookups, m.httpRequests, m.httpDuration, m.versionsIndex, m.prewarm,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -57,6 +67,20 @@ func (m *Metrics) CacheLookup(resource string, hit bool) {
 		result = "hit"
 	}
 	m.cacheLookups.WithLabelValues(resource, result).Inc()
+}
+
+// VersionsIndexOutcome implements mirror.Metrics.
+func (m *Metrics) VersionsIndexOutcome(outcome string) {
+	m.versionsIndex.WithLabelValues(outcome).Inc()
+}
+
+// PrewarmResult implements prewarm.Metrics.
+func (m *Metrics) PrewarmResult(resource string, ok bool) {
+	result := "error"
+	if ok {
+		result = "ok"
+	}
+	m.prewarm.WithLabelValues(resource, result).Inc()
 }
 
 // Handler returns the /metrics HTTP handler scoped to terrastrata's registry.
