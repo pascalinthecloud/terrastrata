@@ -49,6 +49,12 @@ spec:
               value: {{ .Values.config.logLevel | quote }}
             - name: INDEX_TTL
               value: {{ .Values.config.indexTTL | quote }}
+            {{- if .Values.prewarm.providers }}
+            - name: PREWARM_PROVIDERS
+              value: {{ join "," .Values.prewarm.providers | quote }}
+            - name: PREWARM_PLATFORMS
+              value: {{ join "," .Values.prewarm.platforms | quote }}
+            {{- end }}
             {{- if .Values.auth.enabled }}
             - name: AUTH_TOKEN
               valueFrom:

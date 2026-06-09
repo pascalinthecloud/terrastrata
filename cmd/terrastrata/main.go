@@ -21,6 +21,7 @@ import (
 	"github.com/pascalinthecloud/terrastrata/internal/httpx"
 	"github.com/pascalinthecloud/terrastrata/internal/mirror"
 	"github.com/pascalinthecloud/terrastrata/internal/observ"
+	"github.com/pascalinthecloud/terrastrata/internal/prewarm"
 )
 
 // Build metadata, injected via -ldflags at build time (see Makefile).
@@ -92,8 +93,21 @@ func run() error {
 		"s3", cfg.S3.Enabled(),
 		"auth", cfg.AuthToken != "",
 		"index_ttl", cfg.IndexTTL,
+		"prewarm", len(cfg.PrewarmProviders),
 	)
-	return serve(srv, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Pre-warm in the background so it never blocks startup or /health. It
+	// replays requests against the raw mirror routes (no auth/middleware).
+	if len(cfg.PrewarmProviders) > 0 {
+		mirrorMux := http.NewServeMux()
+		handler.Routes(mirrorMux)
+		go prewarm.Run(ctx, mirrorMux, cfg.PrewarmProviders, cfg.PrewarmPlatforms, logger)
+	}
+
+	return serve(ctx, srv, logger)
 }
 
 // buildServer assembles the routing tree and the hardened http.Server.
@@ -134,11 +148,9 @@ func buildServer(cfg config.Config, h *mirror.Handler, metrics *observ.Metrics, 
 	}
 }
 
-// serve runs the server until a termination signal, then drains connections.
-func serve(srv *http.Server, logger *slog.Logger) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
+// serve runs the server until ctx is cancelled (termination signal), then drains
+// connections.
+func serve(ctx context.Context, srv *http.Server, logger *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

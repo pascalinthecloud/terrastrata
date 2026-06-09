@@ -65,6 +65,7 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**
 │   ├── config/              # Env-driven Config + validation
 │   ├── cache/               # Two-layer cache: local FS, S3, Layered composition
 │   ├── mirror/              # Protocol: paths, upstream client, translation, handler
+│   ├── prewarm/             # Optional startup cache seeding (in-process replay)
 │   ├── httpx/               # Middleware: request-id, logging, recovery, bearer auth
 │   └── observ/              # slog logger + Prometheus metrics
 ├── go.mod / go.sum          # Module definition + checksums
@@ -101,6 +102,8 @@ set without credentials).
 | `AUTH_TOKEN` | _(empty)_ | Optional bearer token on mirror endpoints; empty = auth disabled |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `INDEX_TTL` | `10m` | Versions-index freshness window (Go duration); `0` disables expiry |
+| `PREWARM_PROVIDERS` | _(empty)_ | Comma-separated `[host/]ns/type[@version]` to warm at startup; empty disables |
+| `PREWARM_PLATFORMS` | `linux_amd64` | Comma-separated `os_arch` for warming zips of `@version` entries |
 
 ### `internal/cache`
 - `Cache` interface: `Get(ctx, key) (io.ReadCloser, bool, error)` and `Put(ctx, key, data)`.
@@ -120,6 +123,12 @@ set without credentials).
   - `GET /:hostname/:namespace/:type/:version/download/:platform/:filename` — provider zip
   - Sets `X-Cache: HIT|MISS|STALE`; verifies the registry SHA-256 before caching a zip; treats the cache as best-effort (never a hard dependency).
   - Versions index is revalidated on `INDEX_TTL`; on upstream failure during revalidation it serves the last-known-good copy stale (`freshness.go` holds the envelope helpers).
+
+### `internal/prewarm`
+Optional startup cache seeding. Replays mirror requests (`[host/]ns/type[@version]`)
+against the handler **in-process** — reusing all validation/caching/checksum logic
+with no duplication — discarding zip bodies so nothing is buffered. Best-effort and
+backgrounded; never blocks startup or `/health`, and cancels on shutdown.
 
 ### `internal/httpx` and `internal/observ`
 Cross-cutting HTTP middleware (request-id, structured access logging, panic
@@ -220,7 +229,6 @@ provider_installation {
 
 ## Known limitations / open TODOs
 
-- No pre-warm on startup — cache is cold until providers are first requested
 - Only provider mirror protocol supported — no module registry protocol
 - Replicas limited to 1 with RWO PVC (use S3-only / RWX for HA)
 
@@ -228,8 +236,8 @@ provider_installation {
 
 ## Roadmap
 
-- [ ] Pre-warm mode: seed cache from a provider list on startup
 - [ ] Support for module registry protocol
+- [x] Pre-warm mode: seed cache from a provider list on startup
 - [x] Cache TTL / revalidation for index.json (with serve-stale-on-outage)
 - [x] Prometheus metrics endpoint
 - [x] Helm chart

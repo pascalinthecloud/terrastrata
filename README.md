@@ -43,6 +43,7 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. Whe
 - When S3 is enabled, works with any S3-compatible backend: AWS S3, OVH Object Storage, MinIO, Azure Blob (via gateway)
 - Kubernetes-native: ships with manifests and a lightweight container image
 - Zero auth required for internal network deployments
+- Optional pre-warm on startup: seed the cache from a provider list (`PREWARM_PROVIDERS`) so CI pipelines hit a warm cache on first run
 - Versions index is revalidated on a configurable TTL so new provider releases appear; if the upstream registry is down at revalidation time, the last-known-good list is served stale (`X-Cache: STALE`) instead of failing
 - `X-Cache: HIT/MISS/STALE` response headers for observability
 - `/health` endpoint for liveness/readiness probes
@@ -115,6 +116,8 @@ All configuration is via environment variables:
 | `AUTH_TOKEN` | _(empty)_ | Optional bearer token required on mirror endpoints. **Leave empty to disable auth** (internal mode) |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `INDEX_TTL` | `10m` | How long a cached provider **versions index** is served before being revalidated upstream (Go duration, e.g. `30m`, `1h`). `0` disables expiry. Archives and zips are immutable and never expire |
+| `PREWARM_PROVIDERS` | _(empty)_ | Comma-separated providers to warm into the cache at startup, each `[host/]namespace/type[@version]`. A bare provider warms only its versions index; `@version` also warms that version's archives and zips. Empty disables pre-warming |
+| `PREWARM_PLATFORMS` | `linux_amd64` | Comma-separated `os_arch` platforms to warm zips for (only applies to `@version` entries) |
 
 > **Note on `AUTH_TOKEN`:** Terraform's `network_mirror` client does not send
 > authentication headers, so bearer auth is meant for an API gateway that injects
@@ -196,7 +199,7 @@ structure is mirrored under your configured S3 prefix.
 ## Roadmap
 
 - [x] Cache TTL / revalidation for index.json (versions list)
-- [ ] Pre-warm mode: seed cache from a provider list on startup
+- [x] Pre-warm mode: seed cache from a provider list on startup
 - [ ] Prometheus metrics endpoint
 - [ ] Helm chart
 - [ ] Support for module registry protocol

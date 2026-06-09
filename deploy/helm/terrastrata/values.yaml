@@ -19,6 +19,14 @@ config:
   # Versions-index freshness window (Go duration); "0" disables expiry.
   indexTTL: "10m"
 
+# Optional startup cache pre-warming.
+#   providers: list of "[host/]namespace/type[@version]"
+#   platforms: os_arch list to warm zips for (@version entries only)
+prewarm:
+  providers: []
+  platforms:
+    - linux_amd64
+
 # Optional bearer-token auth on mirror endpoints.
 # When auth.existingSecret is set, the token is read from it (key: AUTH_TOKEN);
 # otherwise auth.token is used to create a Secret. Empty = auth disabled.
