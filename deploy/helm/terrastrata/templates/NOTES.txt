@@ -1,0 +1,28 @@
+terrastrata is deployed.
+
+In-cluster mirror URL:
+  http://{{ include "terrastrata.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/
+
+Point your Terraform agents at it via ~/.terraformrc:
+
+  provider_installation {
+    network_mirror {
+      url     = "http://{{ include "terrastrata.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/"
+      include = ["registry.terraform.io/*/*"]
+    }
+    direct {
+      exclude = ["registry.terraform.io/*/*"]
+    }
+  }
+
+{{- if not .Values.s3.enabled }}
+
+NOTE: S3 durable cache is disabled — the cache lives only on the PVC. Enable it
+with --set s3.enabled=true and the s3.* values for durability across restarts.
+{{- end }}
+{{- if .Values.auth.enabled }}
+
+Bearer auth is ENABLED. Clients must send: Authorization: Bearer <token>
+(Terraform's network_mirror does not send auth headers; use this only behind a
+gateway that injects the header, or for non-Terraform consumers.)
+{{- end }}
