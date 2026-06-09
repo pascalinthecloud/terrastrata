@@ -6,9 +6,9 @@ type: application
 version: 0.1.0
 # Application version; tracks the terrastrata release.
 appVersion: "0.1.0"
-home: https://github.com/pascaltoepke/terrastrata
+home: https://github.com/pascalinthecloud/terrastrata
 sources:
-  - https://github.com/pascaltoepke/terrastrata
+  - https://github.com/pascalinthecloud/terrastrata
 keywords:
   - terraform
   - provider-mirror

@@ -1,4 +1,4 @@
-module github.com/pascaltoepke/terrastrata
+module github.com/pascalinthecloud/terrastrata
 
 go 1.26
 

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pascaltoepke/terrastrata/internal/cache"
+	"github.com/pascalinthecloud/terrastrata/internal/cache"
 )
 
 // fakeRegistry is an httptest server implementing the upstream provider registry

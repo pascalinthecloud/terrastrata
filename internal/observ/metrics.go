@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/pascaltoepke/terrastrata/internal/httpx"
+	"github.com/pascalinthecloud/terrastrata/internal/httpx"
 )
 
 // Metrics holds terrastrata's Prometheus collectors and the registry they belong

@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 
-	"github.com/pascaltoepke/terrastrata/internal/config"
+	"github.com/pascalinthecloud/terrastrata/internal/config"
 )
 
 // s3API is the subset of the AWS S3 client terrastrata uses. Defining it as an

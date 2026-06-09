@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pascaltoepke/terrastrata/internal/cache"
-	"github.com/pascaltoepke/terrastrata/internal/config"
-	"github.com/pascaltoepke/terrastrata/internal/httpx"
-	"github.com/pascaltoepke/terrastrata/internal/mirror"
-	"github.com/pascaltoepke/terrastrata/internal/observ"
+	"github.com/pascalinthecloud/terrastrata/internal/cache"
+	"github.com/pascalinthecloud/terrastrata/internal/config"
+	"github.com/pascalinthecloud/terrastrata/internal/httpx"
+	"github.com/pascalinthecloud/terrastrata/internal/mirror"
+	"github.com/pascalinthecloud/terrastrata/internal/observ"
 )
 
 // Build metadata, injected via -ldflags at build time (see Makefile).
