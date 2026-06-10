@@ -3,9 +3,11 @@
 # ---- build stage ------------------------------------------------------------
 FROM golang:1.26-alpine AS build
 
-# Build metadata, supplied by `make docker` / CI.
+# Build metadata, supplied by `make docker` / CI. DATE may be passed for a
+# reproducible build stamp; if omitted it falls back to the build time.
 ARG VERSION=dev
 ARG COMMIT=none
+ARG DATE=
 
 WORKDIR /src
 
@@ -20,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
     -o /out/terrastrata ./cmd/terrastrata
 
 # Pre-create the cache directory with nonroot ownership; distroless has no shell

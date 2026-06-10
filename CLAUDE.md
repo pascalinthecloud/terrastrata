@@ -74,7 +74,9 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**
 ├── deploy/
 │   ├── k8s/manifests.yaml   # Namespace, (Secret), PVC, Deployment, Service
 │   └── helm/terrastrata/    # Helm chart
-├── .github/workflows/ci.yml # test, lint, govulncheck, image build + Trivy scan
+├── .github/workflows/
+│   ├── ci.yml               # PR: test, lint, govulncheck, image build + Trivy scan
+│   └── release.yml          # tags: multi-arch GHCR push, SBOM/provenance, cosign sign
 ├── README.md                # User-facing documentation
 └── CLAUDE.md                # This file
 ```

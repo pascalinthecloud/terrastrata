@@ -53,7 +53,10 @@ tidy: ## Tidy and verify go.mod/go.sum
 
 .PHONY: docker
 docker: ## Build the container image
-	docker build -t $(IMAGE) --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) .
+	docker build -t $(IMAGE) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) .
 
 .PHONY: clean
 clean: ## Remove build artifacts
