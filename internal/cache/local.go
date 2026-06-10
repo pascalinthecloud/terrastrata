@@ -14,11 +14,22 @@ import (
 // Local is a filesystem-backed Cache rooted at a single directory. It is the
 // fast, primary cache layer (typically a Kubernetes PVC).
 type Local struct {
-	root string
+	root        string
+	trackAccess bool // touch mtime on read so the evictor can do LRU
+}
+
+// LocalOption configures a Local cache.
+type LocalOption func(*Local)
+
+// WithAccessTracking makes Get touch each file's mtime on read, so the size
+// evictor can use it as an LRU signal. It costs one syscall per cache hit, so it
+// is only worth enabling when eviction is active.
+func WithAccessTracking() LocalOption {
+	return func(l *Local) { l.trackAccess = true }
 }
 
 // NewLocal returns a Local cache rooted at dir, creating the directory if needed.
-func NewLocal(dir string) (*Local, error) {
+func NewLocal(dir string, opts ...LocalOption) (*Local, error) {
 	if dir == "" {
 		return nil, errors.New("cache: local root directory must not be empty")
 	}
@@ -29,7 +40,11 @@ func NewLocal(dir string) (*Local, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cache: resolve local root: %w", err)
 	}
-	return &Local{root: abs}, nil
+	l := &Local{root: abs}
+	for _, opt := range opts {
+		opt(l)
+	}
+	return l, nil
 }
 
 // resolve maps a cache key to an absolute filesystem path, guaranteeing the
@@ -58,12 +73,15 @@ func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, bool, error) 
 		}
 		return nil, false, fmt.Errorf("cache: open %q: %w", key, err)
 	}
-	// Touch the modification time so it tracks last access: the size-based
-	// evictor uses mtime as an LRU signal (filesystem atime is unreliable under
-	// the common noatime/relatime mounts). Best-effort; a failure never affects
-	// the read.
-	now := time.Now()
-	_ = os.Chtimes(path, now, now)
+	// When eviction is active, touch the modification time so it tracks last
+	// access: the size-based evictor uses mtime as an LRU signal (filesystem
+	// atime is unreliable under the common noatime/relatime mounts). This is one
+	// syscall per hit, so it is skipped entirely when eviction is off.
+	// Best-effort; a failure never affects the read.
+	if l.trackAccess {
+		now := time.Now()
+		_ = os.Chtimes(path, now, now)
+	}
 	return f, true, nil
 }
 
