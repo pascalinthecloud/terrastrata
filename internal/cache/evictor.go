@@ -94,16 +94,26 @@ type fileEntry struct {
 	mod  time.Time
 }
 
-// sweep scans the cache, reports its size, and — if over budget — evicts the
+// sweep measures the cache, reports its size, and — if over budget — evicts the
 // least-recently-used files down to the low-water mark.
+//
+// The common case (under budget) only sums file sizes; the more expensive
+// collection of a sorted file list happens only when an eviction is actually
+// needed.
 func (e *Evictor) sweep() {
-	files, total, err := e.scan()
+	total, err := e.totalSize()
 	if err != nil {
 		e.log.Warn("cache evictor scan failed", "err", err)
 		return
 	}
 	e.metrics.CacheSize(total)
 	if e.maxBytes <= 0 || total <= e.maxBytes {
+		return
+	}
+
+	files, total, err := e.collectFiles()
+	if err != nil {
+		e.log.Warn("cache evictor scan failed", "err", err)
 		return
 	}
 
@@ -135,15 +145,10 @@ func (e *Evictor) sweep() {
 	}
 }
 
-// scan walks the cache root, returning every cached file with its size and
-// mtime, plus the total size. The staging dir and in-progress temp files are
-// excluded.
-func (e *Evictor) scan() ([]fileEntry, int64, error) {
-	var (
-		files []fileEntry
-		total int64
-	)
-	err := filepath.WalkDir(e.root, func(path string, d fs.DirEntry, err error) error {
+// walkFiles invokes visit for every cached file under the root, excluding the
+// staging dir and in-progress temp files.
+func (e *Evictor) walkFiles(visit func(path string, info fs.FileInfo)) error {
+	return filepath.WalkDir(e.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -160,9 +165,31 @@ func (e *Evictor) scan() ([]fileEntry, int64, error) {
 		if err != nil {
 			return nil // raced with a delete; skip
 		}
+		visit(path, info)
+		return nil
+	})
+}
+
+// totalSize sums the size of all cached files. This is the cheap common-path
+// measurement: it allocates nothing per file.
+func (e *Evictor) totalSize() (int64, error) {
+	var total int64
+	err := e.walkFiles(func(_ string, info fs.FileInfo) {
+		total += info.Size()
+	})
+	return total, err
+}
+
+// collectFiles returns every cached file with its size and mtime, plus the
+// total. Only called when an eviction is actually needed.
+func (e *Evictor) collectFiles() ([]fileEntry, int64, error) {
+	var (
+		files []fileEntry
+		total int64
+	)
+	err := e.walkFiles(func(path string, info fs.FileInfo) {
 		files = append(files, fileEntry{path: path, size: info.Size(), mod: info.ModTime()})
 		total += info.Size()
-		return nil
 	})
 	return files, total, err
 }

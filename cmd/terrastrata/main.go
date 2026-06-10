@@ -55,8 +55,14 @@ func run() error {
 	slog.SetDefault(logger)
 
 	// Cache: local layer always present; S3 added as the durable layer when
-	// configured. Layered handles a nil durable layer transparently.
-	local, err := cache.NewLocal(cfg.CacheDir)
+	// configured. Layered handles a nil durable layer transparently. Access
+	// tracking (an extra syscall per read) is only enabled when eviction needs
+	// the LRU signal.
+	var localOpts []cache.LocalOption
+	if cfg.CacheMaxBytes > 0 {
+		localOpts = append(localOpts, cache.WithAccessTracking())
+	}
+	local, err := cache.NewLocal(cfg.CacheDir, localOpts...)
 	if err != nil {
 		return err
 	}
