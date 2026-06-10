@@ -207,6 +207,47 @@ func TestFromEnvPrewarmParsing(t *testing.T) {
 	}
 }
 
+func TestParseByteSize(t *testing.T) {
+	ok := map[string]int64{
+		"":       0,
+		"0":      0,
+		"1024":   1024,
+		"1kb":    1000,
+		"1KiB":   1024,
+		"512Mi":  512 << 20,
+		"20GB":   20_000_000_000,
+		"2GiB":   2 << 30,
+		"1.5GiB": int64(1.5 * (1 << 30)),
+	}
+	for in, want := range ok {
+		got, err := parseByteSize(in)
+		if err != nil {
+			t.Errorf("parseByteSize(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseByteSize(%q) = %d, want %d", in, got, want)
+		}
+	}
+	for _, bad := range []string{"abc", "-5", "10XB", "1.2.3G"} {
+		if _, err := parseByteSize(bad); err == nil {
+			t.Errorf("parseByteSize(%q): expected error", bad)
+		}
+	}
+}
+
+func TestFromEnvCacheMaxBytes(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CACHE_MAX_BYTES", "20GiB")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.CacheMaxBytes != 20<<30 {
+		t.Errorf("CacheMaxBytes = %d, want %d", cfg.CacheMaxBytes, int64(20<<30))
+	}
+}
+
 func TestParseLogLevel(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug": slog.LevelDebug,
@@ -233,7 +274,7 @@ func clearEnv(t *testing.T) {
 	for _, k := range []string{
 		"LISTEN_ADDR", "CACHE_DIR", "UPSTREAM_BASE", "AUTH_TOKEN", "LOG_LEVEL", "INDEX_TTL",
 		"S3_BUCKET", "S3_PREFIX", "S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY",
-		"PREWARM_PROVIDERS", "PREWARM_PLATFORMS",
+		"PREWARM_PROVIDERS", "PREWARM_PLATFORMS", "CACHE_MAX_BYTES",
 	} {
 		t.Setenv(k, "")
 	}

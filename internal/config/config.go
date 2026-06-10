@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -65,6 +66,11 @@ type Config struct {
 	PrewarmProviders []string
 	// PrewarmPlatforms is the os_arch list to warm zips for (default linux_amd64).
 	PrewarmPlatforms []string
+
+	// CacheMaxBytes is the size budget for the local filesystem cache. When the
+	// cache exceeds it, least-recently-used entries are evicted. Zero disables
+	// eviction (unbounded growth).
+	CacheMaxBytes int64
 
 	S3 S3Config
 }
@@ -120,6 +126,12 @@ func FromEnv() (Config, error) {
 	if len(cfg.PrewarmPlatforms) == 0 {
 		cfg.PrewarmPlatforms = []string{DefaultPrewarmPlatform}
 	}
+
+	maxBytes, err := parseByteSize(os.Getenv("CACHE_MAX_BYTES"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CacheMaxBytes = maxBytes
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -189,6 +201,46 @@ func (c Config) validate() error {
 	}
 
 	return nil
+}
+
+// byteSuffixes maps size unit suffixes to their multiplier. Decimal (kB, MB, …)
+// and binary (KiB, MiB, …) units are both supported, case-insensitively.
+var byteSuffixes = []struct {
+	suffix string
+	mult   int64
+}{
+	{"kib", 1 << 10}, {"mib", 1 << 20}, {"gib", 1 << 30}, {"tib", 1 << 40},
+	{"ki", 1 << 10}, {"mi", 1 << 20}, {"gi", 1 << 30}, {"ti", 1 << 40},
+	{"kb", 1e3}, {"mb", 1e6}, {"gb", 1e9}, {"tb", 1e12},
+	{"k", 1e3}, {"m", 1e6}, {"g", 1e9}, {"t", 1e12},
+	{"b", 1},
+}
+
+// parseByteSize parses a human-friendly size like "20GB", "512Mi", or a plain
+// byte count. An empty value yields 0 (eviction disabled). Negative is rejected.
+func parseByteSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	lower := strings.ToLower(s)
+	mult := int64(1)
+	num := lower
+	for _, suf := range byteSuffixes {
+		if strings.HasSuffix(lower, suf.suffix) {
+			mult = suf.mult
+			num = strings.TrimSpace(lower[:len(lower)-len(suf.suffix)])
+			break
+		}
+	}
+	val, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: invalid CACHE_MAX_BYTES %q", s)
+	}
+	if val < 0 {
+		return 0, fmt.Errorf("config: CACHE_MAX_BYTES %q must not be negative", s)
+	}
+	return int64(val * float64(mult)), nil
 }
 
 // splitList parses a comma-separated environment value into a trimmed,

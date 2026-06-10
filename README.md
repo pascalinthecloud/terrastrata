@@ -106,6 +106,7 @@ All configuration is via environment variables:
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Address and port to listen on |
 | `CACHE_DIR` | `/cache` | Local filesystem cache directory |
+| `CACHE_MAX_BYTES` | _(empty)_ | Size budget for the local cache (e.g. `20GB`, `512Mi`, or raw bytes). When exceeded, least-recently-used files are evicted down to ~90% of the budget. Empty/`0` disables eviction (unbounded) |
 | `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry base URL |
 | `S3_BUCKET` | _(empty)_ | S3 bucket name. **Leave empty to disable S3** — local filesystem cache only |
 | `S3_PREFIX` | `tf-mirror` | Key prefix within the S3 bucket |
@@ -187,6 +188,8 @@ structure is mirrored under your configured S3 prefix.
     `fresh` (within TTL), `revalidated` (refetched), `stale` (served after an
     upstream failure — **alert on a rising rate here**), `error` (no fallback)
   - `terrastrata_prewarm_total{resource,result}` — startup pre-warm successes/failures
+  - `terrastrata_cache_size_bytes` (gauge), `terrastrata_cache_evictions_total`,
+    `terrastrata_cache_evicted_bytes_total` — local cache size and eviction activity
   - plus standard Go runtime and process collectors
 - Structured JSON access logs on stdout, one line per request, with a
   per-request `X-Request-Id`
@@ -196,7 +199,7 @@ structure is mirrored under your configured S3 prefix.
 ## Kubernetes notes
 
 - **Replicas: 1** — the default PVC uses `ReadWriteOnce`. For HA, switch to `ReadWriteMany` or disable the local PVC and rely on S3 only.
-- **PVC size** — `20Gi` default. `hashicorp/azurerm` alone can reach 30–50 GB if all versions are cached. Size accordingly or implement a cache eviction strategy.
+- **PVC size** — `20Gi` default. `hashicorp/azurerm` alone can reach 30–50 GB if all versions are cached. Size accordingly, and set `CACHE_MAX_BYTES` (e.g. a few GB below the PVC size) so terrastrata evicts least-recently-used artifacts instead of filling the volume.
 - **TLS** — terrastrata serves plain HTTP internally. Terminate TLS at your Ingress or Gateway controller.
 - **Ingress** — an example Ingress resource is included (commented out) in `k8s/manifests.yaml`.
 

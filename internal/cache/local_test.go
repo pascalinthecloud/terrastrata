@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLocalPutGetRoundTrip(t *testing.T) {
@@ -37,6 +38,38 @@ func TestLocalPutGetRoundTrip(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestLocalGetTouchesMtimeForLRU(t *testing.T) {
+	root := t.TempDir()
+	c, err := NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	ctx := context.Background()
+	key := "a/b.json"
+	if err := c.Put(ctx, key, bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	// Backdate the file, then read it: Get should bump mtime toward now.
+	path := filepath.Join(root, key)
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	rc, hit, err := c.Get(ctx, key)
+	if err != nil || !hit {
+		t.Fatalf("Get hit=%v err=%v", hit, err)
+	}
+	rc.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().After(old.Add(time.Hour)) {
+		t.Errorf("mtime not bumped on read: got %v, was %v", info.ModTime(), old)
 	}
 }
 

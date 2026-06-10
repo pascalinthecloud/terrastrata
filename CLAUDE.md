@@ -92,6 +92,7 @@ set without credentials).
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Listen address |
 | `CACHE_DIR` | `/cache` | Local filesystem cache root |
+| `CACHE_MAX_BYTES` | _(empty)_ | Local cache size budget (`20GB`/`512Mi`/bytes); LRU eviction over it. Empty/`0` = unbounded |
 | `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry |
 | `S3_BUCKET` | _(empty)_ | S3 bucket — leave empty to disable S3 |
 | `S3_PREFIX` | `tf-mirror` | S3 key prefix |
@@ -106,12 +107,15 @@ set without credentials).
 | `PREWARM_PLATFORMS` | `linux_amd64` | Comma-separated `os_arch` for warming zips of `@version` entries |
 
 ### `internal/cache`
-- `Cache` interface: `Get(ctx, key) (io.ReadCloser, bool, error)` and `Put(ctx, key, data)`.
-- `Local` — atomic filesystem store (temp-file + rename); contains all keys within the cache root.
+- `Cache` interface: `Get(ctx, key) (io.ReadCloser, bool, error)` and `Put(ctx, key, io.Reader)` (streaming).
+- `Local` — atomic filesystem store (temp-file + fsync + rename); contains all keys within the cache root. Touches mtime on read so it tracks last access.
 - `S3` — AWS SDK v2 backend; path-style addressing for custom endpoints (MinIO/OVH).
 - `Layered` — composes local → S3: `Get` warms the local layer on an S3 hit; `Put`
   writes local synchronously and S3 asynchronously. A nil durable layer is handled
   transparently (local-only mode).
+- `Evictor` — when `CACHE_MAX_BYTES > 0`, a background sweeper (5m) deletes
+  least-recently-used files (by mtime) down to ~90% of the budget; skips the
+  staging dir and in-progress temp files.
 
 ### `internal/mirror`
 - `paths.go` — strict validation of every request coordinate (traversal-proof); the cache's first line of defense.
@@ -135,7 +139,8 @@ Cross-cutting HTTP middleware (request-id, structured access logging, panic
 recovery, optional constant-time bearer auth) and observability (JSON `slog`
 logger + private Prometheus registry on `/metrics`). Metrics: `cache_lookups_total`,
 `http_requests_total`, `http_request_duration_seconds`, `versions_index_total`
-(freshness outcome: fresh/revalidated/stale/error), `prewarm_total`, plus Go/process
+(freshness outcome: fresh/revalidated/stale/error), `prewarm_total`,
+`cache_size_bytes` + `cache_evictions_total`, plus Go/process
 collectors. `/health` and `/metrics` are
 unauthenticated; mirror routes sit behind optional auth.
 
