@@ -22,6 +22,9 @@ type Metrics struct {
 	httpDuration  *prometheus.HistogramVec
 	versionsIndex *prometheus.CounterVec
 	prewarm       *prometheus.CounterVec
+	cacheSize     prometheus.Gauge
+	evictions     prometheus.Counter
+	evictedBytes  prometheus.Counter
 }
 
 // NewMetrics creates and registers terrastrata's collectors on a private
@@ -51,9 +54,22 @@ func NewMetrics() *Metrics {
 			Name: "terrastrata_prewarm_total",
 			Help: "Startup pre-warm operations by resource and result.",
 		}, []string{"resource", "result"}),
+		cacheSize: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "terrastrata_cache_size_bytes",
+			Help: "Total size of the local filesystem cache, measured on each evictor sweep.",
+		}),
+		evictions: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "terrastrata_cache_evictions_total",
+			Help: "Cache files evicted to stay within the size budget.",
+		}),
+		evictedBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "terrastrata_cache_evicted_bytes_total",
+			Help: "Cache bytes evicted to stay within the size budget.",
+		}),
 	}
 	reg.MustRegister(
 		m.cacheLookups, m.httpRequests, m.httpDuration, m.versionsIndex, m.prewarm,
+		m.cacheSize, m.evictions, m.evictedBytes,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -81,6 +97,17 @@ func (m *Metrics) PrewarmResult(resource string, ok bool) {
 		result = "ok"
 	}
 	m.prewarm.WithLabelValues(resource, result).Inc()
+}
+
+// CacheSize implements cache.EvictorMetrics.
+func (m *Metrics) CacheSize(bytes int64) {
+	m.cacheSize.Set(float64(bytes))
+}
+
+// Evicted implements cache.EvictorMetrics.
+func (m *Metrics) Evicted(files int, bytes int64) {
+	m.evictions.Add(float64(files))
+	m.evictedBytes.Add(float64(bytes))
 }
 
 // Handler returns the /metrics HTTP handler scoped to terrastrata's registry.

@@ -49,6 +49,10 @@ spec:
               value: {{ .Values.config.logLevel | quote }}
             - name: INDEX_TTL
               value: {{ .Values.config.indexTTL | quote }}
+            {{- if .Values.config.cacheMaxBytes }}
+            - name: CACHE_MAX_BYTES
+              value: {{ .Values.config.cacheMaxBytes | quote }}
+            {{- end }}
             {{- if .Values.prewarm.providers }}
             - name: PREWARM_PROVIDERS
               value: {{ join "," .Values.prewarm.providers | quote }}

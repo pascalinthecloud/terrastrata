@@ -84,6 +84,9 @@ spec:
               value: "info"
             - name: INDEX_TTL # versions-index freshness window; "0" disables expiry
               value: "10m"
+            # Bound the cache below the PVC size so the volume never fills (LRU eviction).
+            - name: CACHE_MAX_BYTES
+              value: "18GB"
             # --- Optional startup cache pre-warming ---
             # - name: PREWARM_PROVIDERS # [host/]ns/type[@version], comma-separated
             #   value: "hashicorp/azurerm@3.110.0,hashicorp/null"

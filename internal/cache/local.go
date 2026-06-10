@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Local is a filesystem-backed Cache rooted at a single directory. It is the
@@ -57,6 +58,12 @@ func (l *Local) Get(_ context.Context, key string) (io.ReadCloser, bool, error) 
 		}
 		return nil, false, fmt.Errorf("cache: open %q: %w", key, err)
 	}
+	// Touch the modification time so it tracks last access: the size-based
+	// evictor uses mtime as an LRU signal (filesystem atime is unreliable under
+	// the common noatime/relatime mounts). Best-effort; a failure never affects
+	// the read.
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
 	return f, true, nil
 }
 

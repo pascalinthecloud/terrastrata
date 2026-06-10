@@ -94,10 +94,17 @@ func run() error {
 		"auth", cfg.AuthToken != "",
 		"index_ttl", cfg.IndexTTL,
 		"prewarm", len(cfg.PrewarmProviders),
+		"cache_max_bytes", cfg.CacheMaxBytes,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Bound the local cache when a budget is configured (evicts LRU files).
+	if cfg.CacheMaxBytes > 0 {
+		evictor := cache.NewEvictor(cfg.CacheDir, cfg.CacheMaxBytes, metrics, logger)
+		go evictor.Run(ctx)
+	}
 
 	// Pre-warm in the background so it never blocks startup or /health. It
 	// replays requests against the raw mirror routes (no auth/middleware).
