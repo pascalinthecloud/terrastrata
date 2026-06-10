@@ -25,6 +25,19 @@ const defaultHostname = "registry.terraform.io"
 // maxConcurrency bounds how many providers are warmed in parallel.
 const maxConcurrency = 4
 
+// Metrics records pre-warm outcomes. Pass NopMetrics{} to disable.
+type Metrics interface {
+	// PrewarmResult records a warmed resource ("versions", "archives", "zip")
+	// and whether it succeeded.
+	PrewarmResult(resource string, ok bool)
+}
+
+// NopMetrics is a no-op Metrics.
+type NopMetrics struct{}
+
+// PrewarmResult implements Metrics and does nothing.
+func (NopMetrics) PrewarmResult(string, bool) {}
+
 // Entry is a parsed provider to warm. Version is optional: when empty only the
 // versions index is warmed; when set, that version's archives index and zips
 // (for the configured platforms) are warmed too.
@@ -57,7 +70,10 @@ func parseEntry(raw string) (Entry, error) {
 
 // Run warms every configured provider through handler, concurrently and
 // best-effort. It returns when all warming is done or ctx is cancelled.
-func Run(ctx context.Context, handler http.Handler, providers, platforms []string, log *slog.Logger) {
+func Run(ctx context.Context, handler http.Handler, providers, platforms []string, metrics Metrics, log *slog.Logger) {
+	if metrics == nil {
+		metrics = NopMetrics{}
+	}
 	log.Info("prewarm starting", "providers", len(providers), "platforms", platforms)
 
 	sem := make(chan struct{}, maxConcurrency)
@@ -73,17 +89,19 @@ func Run(ctx context.Context, handler http.Handler, providers, platforms []strin
 		go func(e Entry) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			warmProvider(ctx, handler, e, platforms, log)
+			warmProvider(ctx, handler, e, platforms, metrics, log)
 		}(entry)
 	}
 	wg.Wait()
 	log.Info("prewarm complete")
 }
 
-func warmProvider(ctx context.Context, handler http.Handler, e Entry, platforms []string, log *slog.Logger) {
+func warmProvider(ctx context.Context, handler http.Handler, e Entry, platforms []string, metrics Metrics, log *slog.Logger) {
 	base := "/" + e.Hostname + "/" + e.Namespace + "/" + e.Type
 
-	if status := warm(ctx, handler, base+"/index.json"); status != http.StatusOK {
+	status := warm(ctx, handler, base+"/index.json")
+	metrics.PrewarmResult("versions", status == http.StatusOK)
+	if status != http.StatusOK {
 		log.Warn("prewarm versions failed", "provider", e.Namespace+"/"+e.Type, "status", status)
 		return
 	}
@@ -93,6 +111,7 @@ func warmProvider(ctx context.Context, handler http.Handler, e Entry, platforms 
 
 	archivesPath := base + "/" + e.Version + ".json"
 	status, body := fetch(ctx, handler, archivesPath)
+	metrics.PrewarmResult("archives", status == http.StatusOK)
 	if status != http.StatusOK {
 		log.Warn("prewarm archives failed", "provider", e.Namespace+"/"+e.Type, "version", e.Version, "status", status)
 		return
@@ -112,7 +131,9 @@ func warmProvider(ctx context.Context, handler http.Handler, e Entry, platforms 
 			continue
 		}
 		zipPath := dir + "/" + arch.URL
-		if status := warm(ctx, handler, zipPath); status != http.StatusOK {
+		status := warm(ctx, handler, zipPath)
+		metrics.PrewarmResult("zip", status == http.StatusOK)
+		if status != http.StatusOK {
 			log.Warn("prewarm zip failed", "version", e.Version, "platform", plat, "status", status)
 			continue
 		}

@@ -133,7 +133,10 @@ backgrounded; never blocks startup or `/health`, and cancels on shutdown.
 ### `internal/httpx` and `internal/observ`
 Cross-cutting HTTP middleware (request-id, structured access logging, panic
 recovery, optional constant-time bearer auth) and observability (JSON `slog`
-logger + Prometheus registry with `/metrics`). `/health` and `/metrics` are
+logger + private Prometheus registry on `/metrics`). Metrics: `cache_lookups_total`,
+`http_requests_total`, `http_request_duration_seconds`, `versions_index_total`
+(freshness outcome: fresh/revalidated/stale/error), `prewarm_total`, plus Go/process
+collectors. `/health` and `/metrics` are
 unauthenticated; mirror routes sit behind optional auth.
 
 ---

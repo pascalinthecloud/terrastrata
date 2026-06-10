@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,8 +112,9 @@ func TestRunWarmsVersionsArchivesAndZip(t *testing.T) {
 	cacheDir := t.TempDir()
 	mux := newTestMux(t, reg.server.URL, cacheDir)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := &recordMetrics{ok: map[string]int{}}
 
-	Run(context.Background(), mux, []string{"hashicorp/null@3.2.0"}, []string{"linux_amd64"}, log)
+	Run(context.Background(), mux, []string{"hashicorp/null@3.2.0"}, []string{"linux_amd64"}, rec, log)
 
 	// All three artifacts should be cached on disk.
 	for _, rel := range []string{
@@ -124,6 +126,26 @@ func TestRunWarmsVersionsArchivesAndZip(t *testing.T) {
 			t.Errorf("expected cached artifact %q: %v", rel, err)
 		}
 	}
+	// And each resource should be recorded as a successful warm.
+	for _, resource := range []string{"versions", "archives", "zip"} {
+		if rec.ok[resource] != 1 {
+			t.Errorf("PrewarmResult ok[%q] = %d, want 1", resource, rec.ok[resource])
+		}
+	}
+}
+
+// recordMetrics records successful pre-warm results per resource.
+type recordMetrics struct {
+	mu sync.Mutex
+	ok map[string]int
+}
+
+func (r *recordMetrics) PrewarmResult(resource string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ok {
+		r.ok[resource]++
+	}
 }
 
 func TestRunVersionsOnlyWhenNoVersionPinned(t *testing.T) {
@@ -132,7 +154,7 @@ func TestRunVersionsOnlyWhenNoVersionPinned(t *testing.T) {
 	mux := newTestMux(t, reg.server.URL, cacheDir)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	Run(context.Background(), mux, []string{"hashicorp/null"}, []string{"linux_amd64"}, log)
+	Run(context.Background(), mux, []string{"hashicorp/null"}, []string{"linux_amd64"}, NopMetrics{}, log)
 
 	if _, err := os.Stat(filepath.Join(cacheDir, "registry.terraform.io/hashicorp/null/index.json")); err != nil {
 		t.Errorf("versions index should be warmed: %v", err)
@@ -148,5 +170,5 @@ func TestRunSkipsInvalidEntries(t *testing.T) {
 	mux := newTestMux(t, reg.server.URL, t.TempDir())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// Must not panic on a malformed entry; it is logged and skipped.
-	Run(context.Background(), mux, []string{"not-a-valid-entry-with-too/many/slashes/here"}, []string{"linux_amd64"}, log)
+	Run(context.Background(), mux, []string{"not-a-valid-entry-with-too/many/slashes/here"}, []string{"linux_amd64"}, NopMetrics{}, log)
 }
