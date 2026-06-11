@@ -4,6 +4,12 @@
 #
 # This deploys a single-replica, S3-optional mirror. For S3-backed durability,
 # uncomment the Secret and the S3 env block in the Deployment.
+#
+# These raw manifests are intentionally single-replica (ReadWriteOnce PVC). For
+# multi-replica high availability, use the Helm chart in deploy/helm/terrastrata
+# with replicaCount>1, persistence.enabled=false and s3.enabled=true (see the
+# "High availability" section in README.md) — it adds a PodDisruptionBudget and
+# pod anti-affinity that are awkward to maintain by hand here.
 ---
 apiVersion: v1
 kind: Namespace

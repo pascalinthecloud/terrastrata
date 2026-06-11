@@ -19,6 +19,13 @@ Point your Terraform agents at it via ~/.terraformrc:
 
 NOTE: S3 durable cache is disabled — the cache lives only on the PVC. Enable it
 with --set s3.enabled=true and the s3.* values for durability across restarts.
+{{- if gt (int .Values.replicaCount) 1 }}
+
+WARNING: replicaCount is {{ .Values.replicaCount }} but S3 is disabled. Each replica then
+keeps a separate, isolated local cache with no shared durable layer — every
+replica fetches each provider from upstream independently. For HA, enable S3 so
+replicas share durability: --set s3.enabled=true (and persistence.enabled=false).
+{{- end }}
 {{- end }}
 {{- if .Values.auth.enabled }}
 
