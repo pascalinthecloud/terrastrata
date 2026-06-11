@@ -27,6 +27,12 @@ type fakeRegistry struct {
 	// sum but tests can override it to exercise mismatch / empty-checksum paths.
 	servedShasum string
 	hits         atomic.Int64
+	// zipHits counts only the archive-download endpoint, so coalescing tests can
+	// assert a burst of concurrent requests produced exactly one upstream fetch.
+	zipHits atomic.Int64
+	// zipDelay holds the /zip handler briefly to widen the window in which
+	// concurrent requests overlap, making coalescing observable.
+	zipDelay time.Duration
 }
 
 func newFakeRegistry(t *testing.T) *fakeRegistry {
@@ -58,6 +64,10 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 	})
 	mux.HandleFunc("GET /zip", func(w http.ResponseWriter, _ *http.Request) {
 		fr.hits.Add(1)
+		fr.zipHits.Add(1)
+		if fr.zipDelay > 0 {
+			time.Sleep(fr.zipDelay)
+		}
 		w.Header().Set("Content-Type", "application/zip")
 		_, _ = w.Write(fr.zipBytes)
 	})
@@ -180,6 +190,57 @@ func TestEndToEndCachingFlow(t *testing.T) {
 	resp.Body.Close()
 	if reg.hits.Load() != hitsAfterZip {
 		t.Error("cached zip request still hit upstream")
+	}
+}
+
+func TestConcurrentColdZipRequestsCoalesce(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.zipDelay = 50 * time.Millisecond // widen the overlap window
+	h := newTestHandler(t, reg.server.URL)
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const zipPath = "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+
+	// Fire a burst of identical cold requests, released together.
+	const n = 25
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	bodies := make([][]byte, n)
+	statuses := make([]int, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := http.Get(ts.URL + zipPath)
+			if err != nil {
+				t.Errorf("GET: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+			statuses[i] = resp.StatusCode
+			bodies[i], _ = io.ReadAll(resp.Body)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// Every caller got the correct bytes...
+	for i := range n {
+		if statuses[i] != http.StatusOK {
+			t.Errorf("request %d status = %d, want 200", i, statuses[i])
+		}
+		if string(bodies[i]) != string(reg.zipBytes) {
+			t.Errorf("request %d body mismatch", i)
+		}
+	}
+	// ...but the burst hit the upstream archive exactly once.
+	if got := reg.zipHits.Load(); got != 1 {
+		t.Errorf("upstream zip fetches = %d, want 1 (requests coalesced)", got)
 	}
 }
 

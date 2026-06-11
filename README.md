@@ -39,6 +39,7 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. Whe
 
 - Implements the Terraform Network Mirror Protocol — drop-in replacement, no Terraform changes needed
 - Pull-through: providers are fetched and cached on first use, never pre-downloaded
+- Request coalescing: when many agents request the same uncached provider at once, a single upstream fetch is performed and shared — no thundering herd against `registry.terraform.io`
 - Dual-layer cache: local filesystem (fast) + optional S3-compatible object storage (durable)
 - When S3 is enabled, works with any S3-compatible backend: AWS S3, OVH Object Storage, MinIO, Azure Blob (via gateway)
 - Kubernetes-native: ships with manifests and a lightweight container image
