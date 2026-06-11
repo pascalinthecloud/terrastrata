@@ -129,6 +129,7 @@ set without credentials).
   - `GET /:hostname/:namespace/:type/:version/download/:platform/:filename` — provider zip
   - Sets `X-Cache: HIT|MISS|STALE`; verifies the registry SHA-256 before caching a zip; treats the cache as best-effort (never a hard dependency).
   - Versions index is revalidated on `INDEX_TTL`; on upstream failure during revalidation it serves the last-known-good copy stale (`freshness.go` holds the envelope helpers).
+  - Concurrent cold requests for the same coordinate are coalesced (`golang.org/x/sync/singleflight`): one request fetches from upstream and populates the cache while the rest wait and then serve it, collapsing a thundering herd (e.g. a fleet of CI agents starting at once) into a single upstream fetch. The in-flight fetch runs under a detached context so one client hanging up never aborts the work the others are waiting on.
 
 ### `internal/prewarm`
 Optional startup cache seeding. Replays mirror requests (`[host/]ns/type[@version]`)

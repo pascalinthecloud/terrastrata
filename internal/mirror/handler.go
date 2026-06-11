@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // maxZipBytes caps a single provider archive we will stage and cache. Real
@@ -75,6 +77,10 @@ type Handler struct {
 
 	// now returns the current time; overridable in tests for deterministic TTL.
 	now func() time.Time
+
+	// group coalesces concurrent cold requests for the same cache key into a
+	// single upstream fetch (request coalescing / "singleflight").
+	group singleflight.Group
 }
 
 // Cache is the subset of internal/cache used by the handler, restated here to
@@ -147,8 +153,17 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stale or absent: (re)validate against upstream.
-	body, err := h.fetchVersions(r.Context(), c)
+	// Stale or absent: (re)validate against upstream, coalescing concurrent
+	// revalidations of the same index into one upstream call.
+	dctx := context.WithoutCancel(r.Context())
+	v, err := h.coalesce(r.Context(), key, func() (any, error) {
+		body, ferr := h.fetchVersions(dctx, c)
+		if ferr != nil {
+			return nil, ferr
+		}
+		h.storeVersions(dctx, key, body)
+		return body, nil
+	})
 	if err != nil {
 		// Serve a stale-but-present copy on a transient upstream failure; a
 		// definitive 404 (provider removed) is passed through instead.
@@ -167,8 +182,7 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 
 	h.metrics.CacheLookup("versions", false)
 	h.metrics.VersionsIndexOutcome(outcomeRevalidated)
-	h.storeVersions(r.Context(), key, body)
-	writeBody(w, "application/json", "MISS", body)
+	writeBody(w, "application/json", "MISS", v.([]byte))
 }
 
 // versionsFresh reports whether a versions index fetched at fetchedAt is still
@@ -245,29 +259,40 @@ func (h *Handler) handleArchives(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the platforms published for this version, then assemble the index.
-	versions, err := h.upstream.ListVersions(r.Context(), c)
+	// Coalesce concurrent cold requests for the same archives index.
+	dctx := context.WithoutCancel(r.Context())
+	v, err := h.coalesce(r.Context(), key, func() (any, error) {
+		return h.buildArchives(dctx, c, version, key)
+	})
 	if err != nil {
 		h.failUpstream(w, r, err)
 		return
+	}
+	writeBody(w, "application/json", "MISS", v.([]byte))
+}
+
+// buildArchives assembles the archives index for c at version from upstream and
+// caches it, returning the marshalled body. Used inside the coalescing group so
+// concurrent cold requests share a single upstream assembly.
+func (h *Handler) buildArchives(ctx context.Context, c Coordinates, version, key string) ([]byte, error) {
+	versions, err := h.upstream.ListVersions(ctx, c)
+	if err != nil {
+		return nil, err
 	}
 	platforms, err := PlatformsForVersion(versions, version)
 	if err != nil {
-		h.failUpstream(w, r, err)
-		return
+		return nil, err
 	}
-	idx, err := BuildArchivesIndex(r.Context(), h.upstream, c, platforms)
+	idx, err := BuildArchivesIndex(ctx, h.upstream, c, platforms)
 	if err != nil {
-		h.failUpstream(w, r, err)
-		return
+		return nil, err
 	}
 	body, err := json.Marshal(idx)
 	if err != nil {
-		h.fail(w, r, http.StatusInternalServerError, err)
-		return
+		return nil, err
 	}
-	h.store(r.Context(), key, body)
-	writeBody(w, "application/json", "MISS", body)
+	h.store(ctx, key, body)
+	return body, nil
 }
 
 func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
@@ -292,39 +317,96 @@ func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	osName, arch, _ := strings.Cut(c.Platform, "_")
-	meta, err := h.upstream.GetDownload(r.Context(), c, osName, arch)
-	if err != nil {
+	// Coalesce concurrent cold requests for the same archive into one upstream
+	// fetch: the leader fetches, verifies, and populates the cache; the rest
+	// wait and then stream the result from cache. This collapses a thundering
+	// herd (e.g. a fleet of CI agents starting at once) into a single download.
+	dctx := context.WithoutCancel(r.Context())
+	if _, err := h.coalesce(r.Context(), key, func() (any, error) {
+		return nil, h.populateZip(dctx, c, key)
+	}); err != nil {
 		h.failUpstream(w, r, err)
 		return
 	}
-	if meta.Filename != c.Filename {
-		h.fail(w, r, http.StatusNotFound, errors.New("mirror: requested filename does not match upstream"))
+
+	// The archive is in the cache now (written by us or by the request we
+	// waited on); stream it. X-Cache is MISS because it was fetched to satisfy
+	// this burst, not served from a pre-existing cache entry.
+	if h.streamFromCache(w, r, key, "application/zip", "MISS") {
 		return
+	}
+	// Only reached if the cache write failed (e.g. degraded disk): fall back to
+	// a direct fetch so the request still succeeds — no worse than the
+	// pre-coalescing behavior under a broken cache.
+	h.fetchAndServeZip(w, r, c, key)
+}
+
+// fetchStageZip fetches the archive described by c from upstream, verifying the
+// upstream-published filename, that a checksum is present, the size cap, and the
+// SHA-256, and stages it to a verified temp file. The caller closes and removes
+// the file. It performs no caching. A filename mismatch is reported as a
+// not-found so failUpstream maps it to 404.
+func (h *Handler) fetchStageZip(ctx context.Context, c Coordinates) (*os.File, int64, error) {
+	osName, arch, _ := strings.Cut(c.Platform, "_")
+	meta, err := h.upstream.GetDownload(ctx, c, osName, arch)
+	if err != nil {
+		return nil, 0, err
+	}
+	if meta.Filename != c.Filename {
+		return nil, 0, fmt.Errorf("%w: requested filename does not match upstream", ErrNotFound)
 	}
 	// Refuse to mirror an archive the registry won't vouch for: without a
 	// published checksum we cannot guarantee integrity, so we must not cache it.
 	if meta.Shasum == "" {
-		h.fail(w, r, http.StatusBadGateway, errors.New("mirror: upstream provided no checksum"))
-		return
+		return nil, 0, errors.New("mirror: upstream provided no checksum")
 	}
 
-	rc, err := h.upstream.FetchZip(r.Context(), meta.DownloadURL)
+	rc, err := h.upstream.FetchZip(ctx, meta.DownloadURL)
 	if err != nil {
-		h.failUpstream(w, r, err)
-		return
+		return nil, 0, err
 	}
 	defer func() { _ = rc.Close() }()
 
 	// Stream the archive to a staging file (never into memory), verifying both
 	// the size cap and the checksum before it is cached or served.
-	staged, size, err := h.stageVerifiedZip(rc, meta.Shasum)
+	return h.stageVerifiedZip(rc, meta.Shasum)
+}
+
+// populateZip fetches, verifies, and caches the archive for c under key. The
+// cache write is best-effort: on failure it logs and returns nil so callers fall
+// through to a direct fetch rather than failing the request. Run inside the
+// coalescing group so a burst of cold requests triggers exactly one download.
+func (h *Handler) populateZip(ctx context.Context, c Coordinates, key string) error {
+	staged, _, err := h.fetchStageZip(ctx, c)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = staged.Close()
+		//nolint:gosec // G703: name is from os.CreateTemp under our own staging dir
+		_ = os.Remove(staged.Name())
+	}()
+	if _, err := staged.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("mirror: rewind staged zip: %w", err)
+	}
+	if err := h.cache.Put(ctx, key, staged); err != nil {
+		h.log.Warn("cache write failed", "key", key, "err", err)
+	}
+	return nil
+}
+
+// fetchAndServeZip fetches the archive directly and streams it, caching
+// best-effort. It is the fallback when the coalesced cache population could not
+// produce a readable cache entry (a degraded cache); it never coalesces.
+func (h *Handler) fetchAndServeZip(w http.ResponseWriter, r *http.Request, c Coordinates, key string) {
+	staged, size, err := h.fetchStageZip(r.Context(), c)
 	if err != nil {
 		h.failUpstream(w, r, err)
 		return
 	}
 	defer func() {
 		_ = staged.Close()
+		//nolint:gosec // G703: name is from os.CreateTemp under our own staging dir
 		_ = os.Remove(staged.Name())
 	}()
 
@@ -343,6 +425,21 @@ func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Cache", "MISS")
 	if _, err := io.Copy(w, staged); err != nil {
 		h.log.Warn("write zip response failed", "key", key, "err", err)
+	}
+}
+
+// coalesce runs fn at most once for a given key while a call is in flight,
+// sharing the single result among all concurrent callers (request coalescing).
+// fn runs under a detached context so one caller cancelling (its client hung up)
+// does not abort the fetch the others are waiting on; each caller still observes
+// its own context via the select below.
+func (h *Handler) coalesce(ctx context.Context, key string, fn func() (any, error)) (any, error) {
+	ch := h.group.DoChan(key, fn)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		return res.Val, res.Err
 	}
 }
 
@@ -391,12 +488,38 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, key, re
 	}
 	h.metrics.CacheLookup(resource, hit)
 	if !hit {
+		if rc != nil {
+			_ = rc.Close()
+		}
 		return false
 	}
 	defer func() { _ = rc.Close() }()
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Cache", "HIT")
+	if _, err := io.Copy(w, rc); err != nil {
+		h.log.Warn("write cached response failed", "key", key, "err", err)
+	}
+	return true
+}
+
+// streamFromCache writes a cache entry to the response with an explicit X-Cache
+// status, reporting whether it found one. Unlike serveFromCache it records no
+// lookup metric — it is used for the post-population serve in a coalesced miss,
+// where the lookup was already counted as a miss on arrival.
+func (h *Handler) streamFromCache(w http.ResponseWriter, r *http.Request, key, contentType, status string) bool {
+	rc, hit, err := h.cache.Get(r.Context(), key)
+	if err != nil {
+		h.log.Warn("cache read failed", "key", key, "err", err)
+		return false
+	}
+	if !hit {
+		return false
+	}
+	defer func() { _ = rc.Close() }()
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Cache", status)
 	if _, err := io.Copy(w, rc); err != nil {
 		h.log.Warn("write cached response failed", "key", key, "err", err)
 	}
