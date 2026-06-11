@@ -229,10 +229,35 @@ structure is mirrored under your configured S3 prefix.
 
 ## Kubernetes notes
 
-- **Replicas: 1** — the default PVC uses `ReadWriteOnce`. For HA, switch to `ReadWriteMany` or disable the local PVC and rely on S3 only.
+- **Replicas: 1 by default** — the default PVC is `ReadWriteOnce`, so the chart pins one replica and uses the `Recreate` strategy. See **High availability** below to run multiple replicas.
 - **PVC size** — `20Gi` default. `hashicorp/azurerm` alone can reach 30–50 GB if all versions are cached. Size accordingly, and set `CACHE_MAX_BYTES` (e.g. a few GB below the PVC size) so terrastrata evicts least-recently-used artifacts instead of filling the volume.
 - **TLS** — terrastrata serves plain HTTP internally. Terminate TLS at your Ingress or Gateway controller.
 - **Ingress** — an example Ingress resource is included (commented out) in `k8s/manifests.yaml`.
+
+### High availability
+
+A `ReadWriteOnce` PVC cannot be shared, so HA runs **multiple replicas in
+S3-backed mode**: each pod keeps its own ephemeral local cache (an `emptyDir`)
+and shares durability through the S3 layer that every replica reads and writes.
+
+```bash
+helm install tf-mirror deploy/helm/terrastrata \
+  --namespace tf-mirror --create-namespace \
+  --set replicaCount=3 \
+  --set persistence.enabled=false \
+  --set s3.enabled=true --set s3.bucket=tf-mirror \
+  --set s3.endpoint=https://s3.de.io.cloud.ovh.net --set s3.region=de \
+  --set s3.accessKey=... --set s3.secretKey=... \
+  --set podDisruptionBudget.enabled=true
+```
+
+The chart then switches to a rolling-update `Deployment`, spreads replicas across
+nodes (a soft pod anti-affinity, overridable via `affinity` /
+`topologySpreadConstraints`), and renders a `PodDisruptionBudget`. Requesting
+`replicaCount > 1` while keeping a `ReadWriteOnce` PVC is rejected at render time
+with a clear message — switch to S3-backed mode or a `ReadWriteMany` storage
+class. Request coalescing is per-pod, so a cold provider is fetched at most once
+per replica rather than once per request.
 
 ---
 

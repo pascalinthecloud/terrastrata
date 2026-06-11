@@ -1,3 +1,6 @@
+{{- if and (gt (int .Values.replicaCount) 1) .Values.persistence.enabled (eq .Values.persistence.accessMode "ReadWriteOnce") }}
+{{- fail "terrastrata: replicaCount > 1 needs persistence.enabled=false (S3-backed HA) or a ReadWriteMany persistence.accessMode — a ReadWriteOnce PVC cannot be shared across replicas. See the HA recipe in values.yaml." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -117,8 +120,23 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- if .Values.affinity }}
       affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if gt (int .Values.replicaCount) 1 }}
+      # Multi-replica default: prefer spreading replicas across nodes.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "terrastrata.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}

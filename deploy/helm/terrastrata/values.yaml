@@ -9,7 +9,20 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-replicaCount: 1 # keep at 1 with a ReadWriteOnce PVC
+# Number of replicas. Keep at 1 with a ReadWriteOnce PVC (the default). For
+# high availability, run multiple replicas in S3-backed mode — see the HA recipe:
+#
+#   replicaCount: 3
+#   persistence.enabled: false   # local cache becomes a per-pod emptyDir
+#   s3.enabled: true             # shared durable layer all replicas read/write
+#   podDisruptionBudget.enabled: true
+#
+# Each replica keeps its own fast local cache and shares durability via S3; a
+# cold object may be fetched up to once per replica (in-process coalescing is
+# per-pod), still far below per-request. A ReadWriteOnce PVC cannot be shared, so
+# replicaCount > 1 with persistence.enabled=true is rejected at render time
+# unless the PVC is ReadWriteMany.
+replicaCount: 1
 
 # Core configuration (maps to terrastrata env vars).
 config:
@@ -51,12 +64,23 @@ s3:
   secretKey: ""
   existingSecret: ""
 
-# Local filesystem cache (PVC). Required even when S3 is enabled (fast layer).
+# Local filesystem fast cache. When enabled, a PVC is mounted at /cache. Disable
+# it (enabled: false) to use a per-pod emptyDir instead — required for
+# multi-replica HA, where the durable S3 layer is shared and the local layer is
+# just an ephemeral per-pod accelerator.
 persistence:
   enabled: true
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 20Gi
+
+# Optional PodDisruptionBudget — keeps a minimum number of replicas available
+# during voluntary disruptions (node drains, rolling updates). Only meaningful
+# with replicaCount > 1; enable it for HA.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1   # set one of minAvailable / maxUnavailable, not both
 
 service:
   type: ClusterIP
@@ -107,4 +131,18 @@ podAnnotations:
 
 nodeSelector: {}
 tolerations: []
+
+# Pod affinity/anti-affinity. Left empty by default; when replicaCount > 1 and
+# this is empty, the chart injects a soft (preferred) anti-affinity so replicas
+# prefer to spread across nodes. Set this to take full control.
 affinity: {}
+
+# Optional topologySpreadConstraints (rendered verbatim when set). Use for hard
+# spreading across zones/nodes in HA, e.g.:
+#   - maxSkew: 1
+#     topologyKey: kubernetes.io/hostname
+#     whenUnsatisfiable: ScheduleAnyway
+#     labelSelector:
+#       matchLabels:
+#         app.kubernetes.io/name: terrastrata
+topologySpreadConstraints: []

@@ -217,9 +217,9 @@ are stored as raw bytes (immutable per version).
 
 ## Kubernetes deployment notes
 
-- **Replicas: 1** — PVC is `ReadWriteOnce`. For HA, use `ReadWriteMany` or S3-only mode.
-- **Strategy: Recreate** — required for RWO PVC, avoids two pods competing for the volume.
-- **PVC size** — 20Gi default. `hashicorp/azurerm` alone can grow to 30–50 GB if all versions are cached.
+- **Replicas: 1 by default** — the default PVC is `ReadWriteOnce`, so the chart pins one replica with the `Recreate` strategy (avoids two pods competing for the volume).
+- **High availability** — run multiple replicas in S3-backed mode: `replicaCount>1` + `persistence.enabled=false` (per-pod `emptyDir` local cache) + `s3.enabled=true` (shared durable layer). The chart then uses a rolling-update `Deployment`, injects a soft pod anti-affinity (overridable via `affinity`/`topologySpreadConstraints`), and renders an optional `PodDisruptionBudget` (`podDisruptionBudget.enabled`). A Helm `fail` guard rejects `replicaCount>1` with a RWO PVC (use S3-backed mode or a RWX `persistence.accessMode`). Coalescing is per-pod, so a cold object is fetched at most once per replica.
+- **PVC size** — 20Gi default. `hashicorp/azurerm` alone can grow to 30–50 GB if all versions are cached; cap with `CACHE_MAX_BYTES`.
 - **TLS** — terrastrata serves plain HTTP internally. Terminate TLS at Ingress/Gateway.
 - **S3 credentials** — stored in a Kubernetes `Secret` (`tf-mirror-s3`).
 
@@ -241,7 +241,7 @@ provider_installation {
 ## Known limitations / open TODOs
 
 - Only provider mirror protocol supported — no module registry protocol
-- Replicas limited to 1 with RWO PVC (use S3-only / RWX for HA)
+- Multi-replica HA requires S3-backed mode (or a RWX PVC); the default RWO PVC is single-replica
 
 ---
 
@@ -252,6 +252,8 @@ provider_installation {
 - [x] Cache TTL / revalidation for index.json (with serve-stale-on-outage)
 - [x] Prometheus metrics endpoint
 - [x] Helm chart
+- [x] Request coalescing (singleflight) for concurrent cold requests
+- [x] Multi-replica HA (S3-backed, with PDB + anti-affinity)
 
 ---
 
