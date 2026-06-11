@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an enhancement to terrastrata
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that terrastrata makes hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like terrastrata to do? Sketch the behavior, config, or API.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you've weighed.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This fits terrastrata's scope as a pull-through provider mirror (not a general-purpose proxy).
+          required: true

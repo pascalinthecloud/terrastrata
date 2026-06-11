@@ -265,9 +265,22 @@ per replica rather than once per request.
 
 - [x] Cache TTL / revalidation for index.json (versions list)
 - [x] Pre-warm mode: seed cache from a provider list on startup
-- [ ] Prometheus metrics endpoint
-- [ ] Helm chart
+- [x] Prometheus metrics endpoint
+- [x] Helm chart
+- [x] Size-bounded LRU cache eviction (`CACHE_MAX_BYTES`)
+- [x] Request coalescing for concurrent cold requests
+- [x] Multi-replica high availability (S3-backed)
 - [ ] Support for module registry protocol
+
+---
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development workflow and conventions. By participating you agree to the
+[Code of Conduct](CODE_OF_CONDUCT.md). Security issues should be reported
+privately per the [Security Policy](SECURITY.md). Notable changes are recorded in
+the [Changelog](CHANGELOG.md).
 
 ---
 
