@@ -2,7 +2,7 @@ name: Release
 
 # Publishes a multi-arch container image to GHCR on every version tag, with an
 # SBOM, build provenance, and a keyless cosign signature. Tag a release with:
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.2.0 && git push origin v0.2.0
 on:
   push:
     tags: ["v*.*.*"]
