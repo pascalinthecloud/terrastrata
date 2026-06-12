@@ -36,7 +36,7 @@ body:
     attributes:
       label: terrastrata version
       description: Image tag or `version`/`commit` from startup logs.
-      placeholder: "ghcr.io/pascalinthecloud/terrastrata:0.1.0"
+      placeholder: "ghcr.io/pascalinthecloud/terrastrata:0.2.0"
     validations:
       required: true
   - type: dropdown

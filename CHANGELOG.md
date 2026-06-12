@@ -7,8 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These changes are on `main` but **not** in the released `v0.1.0` image. Cut a new
-tag (e.g. `v0.2.0`) to publish them.
+## [0.2.0] - 2026-06-11
 
 ### Added
 
@@ -55,5 +54,6 @@ Initial release.
 - CI (test, lint, govulncheck, Trivy scan) and a release pipeline publishing a
   signed (cosign keyless), multi-arch image with SBOM and provenance to GHCR.
 
-[Unreleased]: https://github.com/pascalinthecloud/terrastrata/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/pascalinthecloud/terrastrata/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pascalinthecloud/terrastrata/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pascalinthecloud/terrastrata/releases/tag/v0.1.0
