@@ -3,6 +3,10 @@
 Thanks for your interest in improving terrastrata! This document covers the
 development workflow and project conventions.
 
+By participating, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md).
+Found a security issue? Please follow the [Security Policy](SECURITY.md) and
+report it privately rather than opening a public issue.
+
 ## Prerequisites
 
 - Go **1.26+**

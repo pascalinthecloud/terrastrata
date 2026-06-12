@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a defect in terrastrata
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please do **not** include
+        secrets (S3 keys, tokens) in logs or config you paste here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps. Include the request path (e.g. the `terraform init` provider) where relevant.
+      placeholder: |
+        1. Deploy terrastrata with ...
+        2. Run `terraform init` against ...
+        3. See error ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: terrastrata's structured logs and/or the `X-Cache` header for the failing request. Redact secrets.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: terrastrata version
+      description: Image tag or `version`/`commit` from startup logs.
+      placeholder: "ghcr.io/pascalinthecloud/terrastrata:0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Kubernetes (Helm chart)
+        - Kubernetes (raw manifests)
+        - Docker / standalone
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Relevant env vars / Helm values. **Redact all credentials.**
+      render: yaml
