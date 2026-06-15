@@ -1,0 +1,57 @@
+# S3 overlay: adds a MinIO durable layer and points terrastrata at it, so the
+# full local -> S3 -> upstream path is exercised (async S3 writes, warm-on-S3-hit,
+# durable cache surviving a terrastrata restart).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.s3.yml up --build
+#
+#   - MinIO API:     http://localhost:9000
+#   - MinIO console: http://localhost:9001   (minioadmin / minioadmin)
+name: terrastrata-local
+
+services:
+  terrastrata:
+    environment:
+      S3_BUCKET: terrastrata
+      S3_PREFIX: tf-mirror
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+    depends_on:
+      createbucket:
+        condition: service_completed_successfully
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot: wait for MinIO, then create the bucket terrastrata writes to.
+  createbucket:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/terrastrata &&
+      echo 'bucket terrastrata ready'
+      "
+    restart: "no"
+
+volumes:
+  minio-data:
