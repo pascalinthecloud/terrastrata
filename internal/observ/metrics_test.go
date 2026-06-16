@@ -2,6 +2,7 @@ package observ
 
 import (
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -26,6 +27,29 @@ func TestMetricsSurface(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics output missing %q", want)
+		}
+	}
+}
+
+// TestHTTPDurationBucketsCoverSlowRequests guards the widened latency buckets:
+// the tail must extend past DefBuckets' 10s ceiling so slow cold zip fetches are
+// measurable rather than collapsing into +Inf.
+func TestHTTPDurationBucketsCoverSlowRequests(t *testing.T) {
+	m := NewMetrics()
+	// Drive one request through the middleware so the histogram series exist.
+	h := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Pattern = "GET /x"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	body := scrape(t, m)
+	// le labels are unique to the duration histogram in this registry, so their
+	// presence confirms the tail buckets exist (order of labels is not asserted).
+	for _, le := range []string{"20", "40", "80", "120"} {
+		if !strings.Contains(body, `le="`+le+`"`) {
+			t.Errorf("missing histogram bucket le=%s — wide latency buckets not configured", le)
 		}
 	}
 }

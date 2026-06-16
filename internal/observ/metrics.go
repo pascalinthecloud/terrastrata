@@ -12,6 +12,16 @@ import (
 	"github.com/pascalinthecloud/terrastrata/internal/httpx"
 )
 
+// httpDurationBuckets must span two very different regimes on one histogram:
+// fast cache hits (single-digit milliseconds) and slow cold fetches — a provider
+// zip streamed from the upstream registry can take tens of seconds. Prometheus's
+// DefBuckets top out at 10s, which collapses every slower request into +Inf and
+// blinds the zip-route p95/p99. Extend the tail to 120s so that latency is
+// actually measurable; the extra buckets are negligible on the fast routes.
+var httpDurationBuckets = []float64{
+	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80, 120,
+}
+
 // Metrics holds terrastrata's Prometheus collectors and the registry they belong
 // to. It satisfies mirror.Metrics via CacheLookup.
 type Metrics struct {
@@ -44,7 +54,7 @@ func NewMetrics() *Metrics {
 		httpDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "terrastrata_http_request_duration_seconds",
 			Help:    "HTTP request duration by route.",
-			Buckets: prometheus.DefBuckets,
+			Buckets: httpDurationBuckets,
 		}, []string{"route"}),
 		versionsIndex: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "terrastrata_versions_index_total",
