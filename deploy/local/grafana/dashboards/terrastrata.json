@@ -862,6 +862,161 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Zip download latency",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(terrastrata_http_request_duration_seconds_bucket{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(terrastrata_http_request_duration_seconds_bucket{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(terrastrata_http_request_duration_seconds_bucket{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "description": "Provider-zip request latency. Hits serve from local disk (ms); the tail is cold downloads from the upstream registry. Buckets extend to 120s so the tail is real, not clamped at 10s."
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Zip requests slower than threshold",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": true,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(terrastrata_http_request_duration_seconds_count{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\"}[5m])) - sum(rate(terrastrata_http_request_duration_seconds_bucket{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\",le=\"10\"}[5m]))",
+          "legendFormat": ">10s",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(terrastrata_http_request_duration_seconds_count{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\"}[5m])) - sum(rate(terrastrata_http_request_duration_seconds_bucket{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\",le=\"20\"}[5m]))",
+          "legendFormat": ">20s",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(terrastrata_http_request_duration_seconds_count{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\"}[5m])) - sum(rate(terrastrata_http_request_duration_seconds_bucket{route=\"GET /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename}\",le=\"40\"}[5m]))",
+          "legendFormat": ">40s",
+          "refId": "C"
+        }
+      ],
+      "description": "Rate of zip requests exceeding 10/20/40s (count minus the le bucket). The >10s series is the tail that DefBuckets used to hide. A rising tail means slow/large cold downloads from upstream."
     }
   ]
 }
