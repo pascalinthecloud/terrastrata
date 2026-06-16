@@ -1,0 +1,26 @@
+# TLS overlay: puts Caddy in front of terrastrata at https://localhost:8443 so
+# real `terraform init` clients can use it (Terraform requires an https network
+# mirror). Trust Caddy's internal CA once — see deploy/local/README.md.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build
+#
+# Combine overlays freely, e.g. with S3 too:
+#   docker compose -f docker-compose.yml -f docker-compose.s3.yml -f docker-compose.tls.yml up --build
+name: terrastrata-local
+
+services:
+  caddy:
+    image: caddy:2.10
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # holds the internal CA (extract root.crt to trust it)
+      - caddy-config:/config
+    depends_on:
+      - terrastrata
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

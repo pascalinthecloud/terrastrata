@@ -225,6 +225,11 @@ structure is mirrored under your configured S3 prefix.
 - Structured JSON access logs on stdout, one line per request, with a
   per-request `X-Request-Id`
 
+A ready-to-run local stack (terrastrata + Prometheus + Grafana with a
+provisioned dashboard, plus optional MinIO and a TLS front for real `terraform`
+clients) lives in [`deploy/local/`](deploy/local/) for exercising the mirror
+under load and watching these metrics over time.
+
 ---
 
 ## Kubernetes notes
