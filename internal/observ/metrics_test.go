@@ -2,6 +2,8 @@ package observ
 
 import (
 	"io"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -27,6 +29,72 @@ func TestMetricsSurface(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics output missing %q", want)
 		}
+	}
+}
+
+func TestMiddlewareRecordsRouteAndStatus(t *testing.T) {
+	m := NewMetrics()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /widgets/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
+	h := m.Middleware(mux)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/widgets/42", nil))
+
+	body := scrape(t, m)
+	want := `terrastrata_http_requests_total{code="201",route="GET /widgets/{id}"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("metrics output missing %q", want)
+	}
+	if !strings.Contains(body, `terrastrata_http_request_duration_seconds_count{route="GET /widgets/{id}"} 1`) {
+		t.Error("metrics output missing duration observation for the route")
+	}
+}
+
+func TestMiddlewareLabelsUnroutedRequestsAsOther(t *testing.T) {
+	m := NewMetrics()
+	h := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/nowhere", nil))
+
+	body := scrape(t, m)
+	want := `terrastrata_http_requests_total{code="404",route="other"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("metrics output missing %q", want)
+	}
+}
+
+func TestEvictorMetricsSurface(t *testing.T) {
+	m := NewMetrics()
+	m.CacheSize(12345)
+	m.Evicted(3, 999)
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`terrastrata_cache_size_bytes 12345`,
+		`terrastrata_cache_evictions_total 3`,
+		`terrastrata_cache_evicted_bytes_total 999`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics output missing %q", want)
+		}
+	}
+}
+
+func TestNewLoggerRespectsLevel(t *testing.T) {
+	var buf strings.Builder
+	log := NewLogger(&buf, slog.LevelWarn)
+	log.Info("hidden")
+	log.Warn("visible")
+	out := buf.String()
+	if strings.Contains(out, "hidden") {
+		t.Error("info line logged despite warn level")
+	}
+	if !strings.Contains(out, "visible") || !strings.Contains(out, `"level":"WARN"`) {
+		t.Errorf("expected JSON warn line, got %q", out)
 	}
 }
 
