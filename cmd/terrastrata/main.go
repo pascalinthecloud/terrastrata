@@ -143,11 +143,14 @@ func buildServer(cfg config.Config, h *mirror.Handler, metrics *observ.Metrics, 
 		http.Error(w, "terrastrata: Terraform provider network mirror", http.StatusNotFound)
 	})
 
+	// Recovery sits innermost so the 500 it writes lands in the shared
+	// ResponseRecorder and panicking requests still show up in metrics and the
+	// access log (both do their accounting after next.ServeHTTP returns).
 	handler := httpx.Chain(root,
-		httpx.Recovery(logger),
 		httpx.RequestID,
 		metrics.Middleware, // creates the ResponseRecorder reused downstream
 		httpx.Logging(logger),
+		httpx.Recovery(logger),
 	)
 
 	return &http.Server{
