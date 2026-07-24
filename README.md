@@ -80,7 +80,7 @@ Add to `~/.terraformrc` on each agent (or inject via CI pipeline):
 ```hcl
 provider_installation {
   network_mirror {
-    url     = "http://tf-mirror.tf-mirror.svc.cluster.local/"
+    url     = "https://tf-mirror.internal/" # your Ingress/Gateway hostname
     include = ["registry.terraform.io/*/*"]
   }
   direct {
@@ -88,6 +88,11 @@ provider_installation {
   }
 }
 ```
+
+> **The mirror URL must be `https`** — Terraform refuses a plaintext
+> `network_mirror` URL. terrastrata itself serves plain HTTP, so point agents
+> at the TLS-terminating Ingress/Gateway in front of it (see the Ingress
+> options in the chart), with a certificate the agents trust.
 
 ### 3. Run `terraform init` as normal
 

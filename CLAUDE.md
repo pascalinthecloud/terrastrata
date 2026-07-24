@@ -228,14 +228,17 @@ are stored as raw bytes (immutable per version).
 ```hcl
 provider_installation {
   network_mirror {
-    url     = "http://tf-mirror.tf-mirror.svc.cluster.local/"
-    include = ["registry.terraform.io/*/*"]
+    url     = "https://tf-mirror.internal/" # must be https — Terraform refuses
+    include = ["registry.terraform.io/*/*"]  # a plaintext network_mirror URL
   }
   direct {
     exclude = ["registry.terraform.io/*/*"]
   }
 }
 ```
+Terraform requires an `https` mirror URL, so agents go through the
+TLS-terminating Ingress/Gateway in front of terrastrata, never the plain-HTTP
+Service directly.
 
 ---
 
