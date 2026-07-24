@@ -62,16 +62,19 @@ With raw manifests:
 kubectl apply -f deploy/k8s/manifests.yaml
 ```
 
-Or with Helm:
+Or with Helm, straight from the OCI registry (chart is cosign-signed like the image):
 
 ```bash
-helm install tf-mirror deploy/helm/terrastrata \
+helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata \
+  --version 0.3.0 \
   --namespace tf-mirror --create-namespace
 # With durable S3 cache:
 #   --set s3.enabled=true --set s3.bucket=tf-mirror \
 #   --set s3.endpoint=https://s3.de.io.cloud.ovh.net --set s3.region=de \
 #   --set s3.accessKey=... --set s3.secretKey=...
 ```
+
+(From a checkout, `helm install tf-mirror deploy/helm/terrastrata ...` works the same.)
 
 ### 2. Configure Terraform agents
 
@@ -80,7 +83,7 @@ Add to `~/.terraformrc` on each agent (or inject via CI pipeline):
 ```hcl
 provider_installation {
   network_mirror {
-    url     = "http://tf-mirror.tf-mirror.svc.cluster.local/"
+    url     = "https://tf-mirror.internal/" # your Ingress/Gateway hostname
     include = ["registry.terraform.io/*/*"]
   }
   direct {
@@ -88,6 +91,11 @@ provider_installation {
   }
 }
 ```
+
+> **The mirror URL must be `https`** — Terraform refuses a plaintext
+> `network_mirror` URL. terrastrata itself serves plain HTTP, so point agents
+> at the TLS-terminating Ingress/Gateway in front of it (see the Ingress
+> options in the chart), with a certificate the agents trust.
 
 ### 3. Run `terraform init` as normal
 

@@ -99,6 +99,110 @@ jobs:
       - name: Validate raw manifests
         run: $KUBECONFORM -strict -summary deploy/k8s/manifests.yaml
 
+  e2e:
+    name: E2E (terraform init)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: terrastrata:e2e
+      # Terraform refuses a plaintext network_mirror URL, so the mirror sits
+      # behind an nginx TLS proxy with a self-signed cert — the same shape as
+      # production (TLS terminated in front of terrastrata). SSL_CERT_FILE
+      # makes terraform and curl trust it without touching the system store.
+      - name: Run terrastrata behind a TLS proxy
+        run: |
+          docker run -d --name terrastrata --network host terrastrata:e2e
+          mkdir tls && cd tls
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
+            -days 2 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+          cat > nginx.conf <<'EOF'
+          events {}
+          http {
+            server {
+              listen 8443 ssl;
+              ssl_certificate /tls/cert.pem;
+              ssl_certificate_key /tls/key.pem;
+              location / {
+                proxy_pass http://127.0.0.1:8080;
+              }
+            }
+          }
+          EOF
+          docker run -d --name tls-proxy --network host \
+            -v "$PWD:/tls:ro" -v "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+          for i in $(seq 1 30); do
+            curl -fs --cacert cert.pem https://localhost:8443/health >/dev/null && exit 0
+            sleep 1
+          done
+          echo "mirror did not become healthy" >&2
+          docker logs terrastrata >&2
+          docker logs tls-proxy >&2
+          exit 1
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+      # The real client is the one thing unit tests cannot fake: run terraform
+      # init through the mirror twice and require the second install to be
+      # served entirely from cache.
+      - name: terraform init through the mirror
+        env:
+          SSL_CERT_FILE: ${{ github.workspace }}/tls/cert.pem
+        run: |
+          export TF_CLI_CONFIG_FILE=$PWD/e2e.tfrc
+          cat > e2e.tfrc <<'EOF'
+          provider_installation {
+            network_mirror {
+              url     = "https://localhost:8443/"
+              include = ["registry.terraform.io/*/*"]
+            }
+            direct {
+              exclude = ["registry.terraform.io/*/*"]
+            }
+          }
+          EOF
+          mkdir cold warm
+          cat > cold/main.tf <<'EOF'
+          terraform {
+            required_providers {
+              null = {
+                source  = "registry.terraform.io/hashicorp/null"
+                version = "3.2.2"
+              }
+            }
+          }
+          EOF
+          cp cold/main.tf warm/main.tf
+          terraform -chdir=cold init -input=false -no-color
+          terraform -chdir=warm init -input=false -no-color
+      - name: Assert everything the client needed is now cached
+        run: |
+          base=https://localhost:8443/registry.terraform.io/hashicorp/null
+          for path in \
+            "$base/index.json" \
+            "$base/3.2.2.json" \
+            "$base/3.2.2/download/linux_amd64/terraform-provider-null_3.2.2_linux_amd64.zip"; do
+            cache=$(curl -fs --cacert tls/cert.pem -o /dev/null -w '%header{x-cache}' "$path")
+            echo "$path -> X-Cache: $cache"
+            if [ "$cache" != "HIT" ]; then
+              echo "expected a cache HIT" >&2
+              exit 1
+            fi
+          done
+      - name: Container logs
+        if: failure()
+        run: |
+          docker logs terrastrata || true
+          docker logs tls-proxy || true
+
   docker:
     name: Image build + scan
     runs-on: ubuntu-latest
