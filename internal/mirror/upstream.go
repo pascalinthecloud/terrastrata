@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,12 @@ type Upstream struct {
 	base   string
 	client *http.Client
 	ua     string
+
+	// allowHTTP permits plain-http download URLs. It is derived from the base
+	// URL's scheme: an operator who configured an http:// upstream (MinIO, local
+	// dev) has opted out of TLS; against the default https registry, a plain-http
+	// download_url would be a downgrade and is refused.
+	allowHTTP bool
 }
 
 // VersionMeta is one entry from the registry "list versions" response.
@@ -62,9 +69,10 @@ func NewUpstream(base, userAgent string, timeout time.Duration) *Upstream {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	return &Upstream{
-		base:   base,
-		client: &http.Client{Transport: transport},
-		ua:     userAgent,
+		base:      base,
+		client:    &http.Client{Transport: transport},
+		ua:        userAgent,
+		allowHTTP: strings.HasPrefix(base, "http://"),
 	}
 }
 
@@ -99,11 +107,12 @@ func (u *Upstream) GetDownload(ctx context.Context, c Coordinates, os, arch stri
 }
 
 // FetchZip streams a provider archive from an absolute download URL. The caller
-// owns and must Close the returned reader. Only http/https URLs are permitted.
+// owns and must Close the returned reader. Only https URLs are permitted, plus
+// plain http when the upstream base itself is http (dev/MinIO setups).
 func (u *Upstream) FetchZip(ctx context.Context, downloadURL string) (io.ReadCloser, error) {
 	parsed, err := url.Parse(downloadURL)
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") {
-		return nil, fmt.Errorf("upstream: refusing non-http download url %q", downloadURL)
+	if err != nil || !(parsed.Scheme == "https" || (parsed.Scheme == "http" && u.allowHTTP)) {
+		return nil, fmt.Errorf("upstream: refusing download url %q (https required)", downloadURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
