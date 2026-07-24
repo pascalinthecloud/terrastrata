@@ -66,6 +66,13 @@ type Handler struct {
 	metrics  Metrics
 	log      *slog.Logger
 
+	// hostname is the registry hostname this mirror serves providers for.
+	// Requests addressing any other hostname are 404s: the network mirror
+	// protocol namespaces providers by hostname, and silently proxying every
+	// hostname to the one configured upstream would cache upstream content
+	// under foreign cache keys (aliasing).
+	hostname string
+
 	// stagingDir is a writable directory for staging provider zips while their
 	// checksum is verified. It must be on a writable volume (the container root
 	// filesystem is read-only), so it lives under the cache directory.
@@ -90,11 +97,16 @@ type Cache interface {
 	Put(ctx context.Context, key string, r io.Reader) error
 }
 
-// Options configures a Handler. Cache, Upstream and Logger are required.
+// Options configures a Handler. Cache, Upstream, Hostname and Logger are
+// required.
 type Options struct {
 	Cache    Cache
 	Upstream *Upstream
 	Metrics  Metrics // defaults to NopMetrics{} when nil
+	// Hostname is the registry hostname this mirror serves providers for (the
+	// {hostname} segment clients request). Requests for other hostnames are
+	// rejected with a 404. Compared case-insensitively.
+	Hostname string
 	// StagingDir is a writable directory for verifying zips; created if absent.
 	StagingDir string
 	// IndexTTL is the versions-index freshness window; zero disables expiry.
@@ -108,6 +120,9 @@ func NewHandler(opts Options) (*Handler, error) {
 	if opts.Metrics == nil {
 		opts.Metrics = NopMetrics{}
 	}
+	if opts.Hostname == "" {
+		return nil, errors.New("mirror: Options.Hostname is required")
+	}
 	if err := os.MkdirAll(opts.StagingDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mirror: create staging dir: %w", err)
 	}
@@ -115,11 +130,35 @@ func NewHandler(opts Options) (*Handler, error) {
 		cache:      opts.Cache,
 		upstream:   opts.Upstream,
 		metrics:    opts.Metrics,
+		hostname:   opts.Hostname,
 		stagingDir: opts.StagingDir,
 		indexTTL:   opts.IndexTTL,
 		now:        time.Now,
 		log:        opts.Logger,
 	}, nil
+}
+
+// provider validates the request's hostname/namespace/type triple and enforces
+// that it addresses the hostname this mirror serves.
+func (h *Handler) provider(r *http.Request) (Coordinates, error) {
+	c, err := ValidateProvider(r.PathValue("hostname"), r.PathValue("namespace"), r.PathValue("type"))
+	if err != nil {
+		return Coordinates{}, err
+	}
+	if !strings.EqualFold(c.Hostname, h.hostname) {
+		return Coordinates{}, fmt.Errorf("%w: hostname %q is not served by this mirror", ErrNotFound, c.Hostname)
+	}
+	return c, nil
+}
+
+// failProvider maps a provider-coordinate error to a client response: a
+// hostname this mirror does not serve is a 404, any syntax error a 400.
+func (h *Handler) failProvider(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, ErrNotFound) {
+		h.fail(w, r, http.StatusNotFound, err)
+		return
+	}
+	h.fail(w, r, http.StatusBadRequest, err)
 }
 
 // Routes registers the mirror endpoints on a ServeMux. The caller owns the mux
@@ -138,9 +177,9 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 // upstream is unreachable during revalidation, the last-known-good copy is
 // served stale — the mirror's whole point is to survive registry outages.
 func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
-	c, err := ValidateProvider(r.PathValue("hostname"), r.PathValue("namespace"), r.PathValue("type"))
+	c, err := h.provider(r)
 	if err != nil {
-		h.fail(w, r, http.StatusBadRequest, err)
+		h.failProvider(w, r, err)
 		return
 	}
 	key := VersionsCacheKey(c)
@@ -243,9 +282,9 @@ func (h *Handler) handleArchives(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base, err := ValidateProvider(r.PathValue("hostname"), r.PathValue("namespace"), r.PathValue("type"))
+	base, err := h.provider(r)
 	if err != nil {
-		h.fail(w, r, http.StatusBadRequest, err)
+		h.failProvider(w, r, err)
 		return
 	}
 	c, err := base.withVersion(version)
@@ -296,9 +335,9 @@ func (h *Handler) buildArchives(ctx context.Context, c Coordinates, version, key
 }
 
 func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
-	base, err := ValidateProvider(r.PathValue("hostname"), r.PathValue("namespace"), r.PathValue("type"))
+	base, err := h.provider(r)
 	if err != nil {
-		h.fail(w, r, http.StatusBadRequest, err)
+		h.failProvider(w, r, err)
 		return
 	}
 	c, err := base.withVersion(r.PathValue("version"))

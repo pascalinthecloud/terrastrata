@@ -30,7 +30,7 @@ func TestParseEntry(t *testing.T) {
 		{"example.com/acme/foo@1.0.0", Entry{Hostname: "example.com", Namespace: "acme", Type: "foo", Version: "1.0.0"}},
 	}
 	for _, c := range cases {
-		got, err := parseEntry(c.in)
+		got, err := parseEntry(c.in, "")
 		if err != nil {
 			t.Errorf("parseEntry(%q): %v", c.in, err)
 			continue
@@ -40,8 +40,19 @@ func TestParseEntry(t *testing.T) {
 		}
 	}
 
+	// A supplied default host wins over the registry.terraform.io fallback for
+	// host-less entries, but never overrides an explicit host.
+	got, err := parseEntry("hashicorp/null", "mirror.corp.example")
+	if err != nil || got.Hostname != "mirror.corp.example" {
+		t.Errorf("parseEntry with default host = %+v, err=%v", got, err)
+	}
+	got, err = parseEntry("example.com/acme/foo", "mirror.corp.example")
+	if err != nil || got.Hostname != "example.com" {
+		t.Errorf("explicit host must win: %+v, err=%v", got, err)
+	}
+
 	for _, bad := range []string{"null", "a/b/c/d", "/type", "ns/"} {
-		if _, err := parseEntry(bad); err == nil {
+		if _, err := parseEntry(bad, ""); err == nil {
 			t.Errorf("parseEntry(%q): expected error", bad)
 		}
 	}
@@ -96,6 +107,7 @@ func newTestMux(t *testing.T, upstreamURL, cacheDir string) http.Handler {
 	h, err := mirror.NewHandler(mirror.Options{
 		Cache:      c,
 		Upstream:   mirror.NewUpstream(upstreamURL, "prewarm-test", 5*time.Second),
+		Hostname:   "registry.terraform.io",
 		StagingDir: t.TempDir(),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -114,7 +126,7 @@ func TestRunWarmsVersionsArchivesAndZip(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := &recordMetrics{ok: map[string]int{}}
 
-	Run(context.Background(), mux, []string{"hashicorp/null@3.2.0"}, []string{"linux_amd64"}, rec, log)
+	Run(context.Background(), mux, "registry.terraform.io", []string{"hashicorp/null@3.2.0"}, []string{"linux_amd64"}, rec, log)
 
 	// All three artifacts should be cached on disk.
 	for _, rel := range []string{
@@ -154,7 +166,7 @@ func TestRunVersionsOnlyWhenNoVersionPinned(t *testing.T) {
 	mux := newTestMux(t, reg.server.URL, cacheDir)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	Run(context.Background(), mux, []string{"hashicorp/null"}, []string{"linux_amd64"}, NopMetrics{}, log)
+	Run(context.Background(), mux, "registry.terraform.io", []string{"hashicorp/null"}, []string{"linux_amd64"}, NopMetrics{}, log)
 
 	if _, err := os.Stat(filepath.Join(cacheDir, "registry.terraform.io/hashicorp/null/index.json")); err != nil {
 		t.Errorf("versions index should be warmed: %v", err)
@@ -170,5 +182,5 @@ func TestRunSkipsInvalidEntries(t *testing.T) {
 	mux := newTestMux(t, reg.server.URL, t.TempDir())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// Must not panic on a malformed entry; it is logged and skipped.
-	Run(context.Background(), mux, []string{"not-a-valid-entry-with-too/many/slashes/here"}, []string{"linux_amd64"}, NopMetrics{}, log)
+	Run(context.Background(), mux, "registry.terraform.io", []string{"not-a-valid-entry-with-too/many/slashes/here"}, []string{"linux_amd64"}, NopMetrics{}, log)
 }

@@ -95,6 +95,7 @@ func newTestHandlerTTL(t *testing.T, base string, ttl time.Duration) *Handler {
 		Cache:      c,
 		Upstream:   u,
 		Metrics:    NopMetrics{},
+		Hostname:   "registry.terraform.io",
 		StagingDir: t.TempDir(),
 		IndexTTL:   ttl,
 		Logger:     log,
@@ -257,6 +258,47 @@ func TestUnknownProviderReturns404(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestMismatchedHostnameReturns404AndNeverReachesUpstream(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// A hostname this mirror does not serve must 404 on every endpoint without
+	// contacting upstream or caching anything under the foreign key.
+	for _, p := range []string{
+		"/evil.example/hashicorp/null/index.json",
+		"/evil.example/hashicorp/null/3.2.0.json",
+		"/evil.example/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip",
+	} {
+		resp := doGet(t, ts, p)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, resp.StatusCode)
+		}
+	}
+	if got := reg.hits.Load(); got != 0 {
+		t.Errorf("mismatched hostname reached upstream %d times, want 0", got)
+	}
+}
+
+func TestHostnameMatchIsCaseInsensitive(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp := doGet(t, ts, "/Registry.Terraform.IO/hashicorp/null/index.json")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 for case-insensitive hostname match", resp.StatusCode)
 	}
 }
 

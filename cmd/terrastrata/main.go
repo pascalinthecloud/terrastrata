@@ -79,6 +79,7 @@ func run() error {
 		Cache:    blobCache,
 		Upstream: upstream,
 		Metrics:  metrics,
+		Hostname: cfg.MirrorHostname,
 		// Stage zips under the cache dir: the container root filesystem is
 		// read-only, so this is the writable volume available for verification.
 		StagingDir: filepath.Join(cfg.CacheDir, ".staging"),
@@ -95,6 +96,7 @@ func run() error {
 		"version", version,
 		"addr", cfg.ListenAddr,
 		"upstream", cfg.UpstreamBase,
+		"hostname", cfg.MirrorHostname,
 		"cache_dir", cfg.CacheDir,
 		"s3", cfg.S3.Enabled(),
 		"auth", cfg.AuthToken != "",
@@ -117,7 +119,7 @@ func run() error {
 	if len(cfg.PrewarmProviders) > 0 {
 		mirrorMux := http.NewServeMux()
 		handler.Routes(mirrorMux)
-		go prewarm.Run(ctx, mirrorMux, cfg.PrewarmProviders, cfg.PrewarmPlatforms, metrics, logger)
+		go prewarm.Run(ctx, mirrorMux, cfg.MirrorHostname, cfg.PrewarmProviders, cfg.PrewarmPlatforms, metrics, logger)
 	}
 
 	return serve(ctx, srv, logger)

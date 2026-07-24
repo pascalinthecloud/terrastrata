@@ -48,6 +48,13 @@ type Config struct {
 	CacheDir     string
 	UpstreamBase string
 
+	// MirrorHostname is the registry hostname clients address providers by (the
+	// {hostname} path segment); requests for any other hostname are rejected.
+	// Defaults to the host of UpstreamBase. Override with MIRROR_HOSTNAME when
+	// clients request a different name than the upstream URL (for example, an
+	// internal proxy of registry.terraform.io reached under another address).
+	MirrorHostname string
+
 	// AuthToken, when non-empty, enables bearer-token authentication on the
 	// mirror endpoints. Empty means auth is disabled (the default internal mode).
 	AuthToken string
@@ -97,6 +104,7 @@ func FromEnv() (Config, error) {
 		ListenAddr:      envOr("LISTEN_ADDR", DefaultListenAddr),
 		CacheDir:        envOr("CACHE_DIR", DefaultCacheDir),
 		UpstreamBase:    strings.TrimRight(envOr("UPSTREAM_BASE", DefaultUpstreamBase), "/"),
+		MirrorHostname:  os.Getenv("MIRROR_HOSTNAME"),
 		AuthToken:       os.Getenv("AUTH_TOKEN"),
 		UpstreamTimeout: DefaultUpstreamTimeout,
 		S3: S3Config{
@@ -135,6 +143,12 @@ func FromEnv() (Config, error) {
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
+	}
+	// Default the served hostname to the upstream's host; validate() guarantees
+	// UpstreamBase parses.
+	if cfg.MirrorHostname == "" {
+		u, _ := url.Parse(cfg.UpstreamBase)
+		cfg.MirrorHostname = u.Host
 	}
 	return cfg, nil
 }
