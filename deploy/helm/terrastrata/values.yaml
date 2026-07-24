@@ -31,9 +31,10 @@ config:
   logLevel: "info"
   # Versions-index freshness window (Go duration); "0" disables expiry.
   indexTTL: "10m"
-  # Local cache size budget (e.g. "18GB"); empty/"0" disables eviction. Set a few
-  # GB below persistence.size so the volume never fills.
-  cacheMaxBytes: ""
+  # Local cache size budget; LRU eviction keeps the cache under it. Keep it a
+  # few GB below persistence.size so the volume never fills (the default tracks
+  # the 20Gi default PVC). Empty/"0" disables eviction (unbounded growth).
+  cacheMaxBytes: "18GB"
 
 # Optional startup cache pre-warming.
 #   providers: list of "[host/]namespace/type[@version]"
