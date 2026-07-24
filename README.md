@@ -109,11 +109,12 @@ All configuration is via environment variables:
 | `CACHE_DIR` | `/cache` | Local filesystem cache directory |
 | `CACHE_MAX_BYTES` | _(empty)_ | Size budget for the local cache (e.g. `20GB`, `512Mi`, or raw bytes). When exceeded, least-recently-used files are evicted down to ~90% of the budget. Empty/`0` disables eviction (unbounded) |
 | `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry base URL |
+| `MIRROR_HOSTNAME` | _(host of `UPSTREAM_BASE`)_ | Registry hostname this mirror serves (the `{hostname}` path segment clients request); requests for any other hostname return 404. Only set it when clients address providers by a different name than the upstream URL |
 | `S3_BUCKET` | _(empty)_ | S3 bucket name. **Leave empty to disable S3** — local filesystem cache only |
 | `S3_PREFIX` | `tf-mirror` | Key prefix within the S3 bucket |
 | `S3_ENDPOINT` | _(empty)_ | Custom S3 endpoint (OVH, MinIO, etc.) |
 | `S3_REGION` | `us-east-1` | S3 region |
-| `S3_ACCESS_KEY` | _(empty)_ | S3 access key |
+| `S3_ACCESS_KEY` | _(empty)_ | S3 access key. Set together with `S3_SECRET_KEY`, or leave **both** empty to use the AWS default credential chain (IRSA, instance profile, env) |
 | `S3_SECRET_KEY` | _(empty)_ | S3 secret key |
 | `AUTH_TOKEN` | _(empty)_ | Optional bearer token required on mirror endpoints. **Leave empty to disable auth** (internal mode) |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
@@ -232,7 +233,8 @@ structure is mirrored under your configured S3 prefix.
 - **Replicas: 1 by default** — the default PVC is `ReadWriteOnce`, so the chart pins one replica and uses the `Recreate` strategy. See **High availability** below to run multiple replicas.
 - **PVC size** — `20Gi` default. `hashicorp/azurerm` alone can reach 30–50 GB if all versions are cached. Size accordingly, and set `CACHE_MAX_BYTES` (e.g. a few GB below the PVC size) so terrastrata evicts least-recently-used artifacts instead of filling the volume.
 - **TLS** — terrastrata serves plain HTTP internally. Terminate TLS at your Ingress or Gateway controller.
-- **Ingress** — an example Ingress resource is included (commented out) in `k8s/manifests.yaml`.
+- **Ingress** — an example Ingress resource is included (commented out) in `deploy/k8s/manifests.yaml`.
+- **Secrets** — for production, prefer `auth.existingSecret` / `s3.existingSecret` over inline chart values: inline credentials end up in Helm release history and shell history. With S3 on AWS, you can skip credentials entirely and use IRSA (`serviceAccount.annotations` + empty `s3.accessKey`).
 
 ### High availability
 
