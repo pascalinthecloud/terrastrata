@@ -1,0 +1,15 @@
+# Prometheus scrape config for the local terrastrata test stack.
+# Short intervals so the Grafana dashboard reacts quickly during manual testing.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: terrastrata
+    static_configs:
+      - targets: ["terrastrata:8080"]
+    # /metrics is the default path; terrastrata exposes it unauthenticated.
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

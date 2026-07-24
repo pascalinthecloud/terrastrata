@@ -1,0 +1,12 @@
+# Terminates TLS for local terraform clients (Terraform refuses a plaintext
+# network_mirror URL). Caddy mints a cert from its own internal CA; trust that
+# CA once (see the README) and `terraform init` works against the mirror.
+{
+	# No automatic public certificates — everything is the internal CA.
+	auto_https disable_redirects
+}
+
+localhost:8443 {
+	tls internal
+	reverse_proxy terrastrata:8080
+}
