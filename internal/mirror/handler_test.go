@@ -34,6 +34,8 @@ type fakeRegistry struct {
 	// zipDelay holds the /zip handler briefly to widen the window in which
 	// concurrent requests overlap, making coalescing observable.
 	zipDelay time.Duration
+	// versionsDelay does the same for the /versions endpoint.
+	versionsDelay time.Duration
 }
 
 func newFakeRegistry(t *testing.T) *fakeRegistry {
@@ -46,6 +48,9 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/providers/hashicorp/null/versions", func(w http.ResponseWriter, _ *http.Request) {
 		fr.hits.Add(1)
+		if fr.versionsDelay > 0 {
+			time.Sleep(fr.versionsDelay)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"versions": []map[string]any{
 				{"version": "3.2.0", "platforms": []map[string]string{{"os": "linux", "arch": "amd64"}}},
@@ -552,6 +557,56 @@ func TestVersionsIndexMetricsOutcomes(t *testing.T) {
 		if rec.outcomes[outcome] != n {
 			t.Errorf("outcome %q = %d, want %d (all: %v)", outcome, rec.outcomes[outcome], n, rec.outcomes)
 		}
+	}
+}
+
+func TestConcurrentColdVersionsRequestsRecordOneRevalidation(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.versionsDelay = 50 * time.Millisecond // widen the overlap window
+	h := newTestHandlerTTL(t, reg.server.URL, time.Minute)
+	rec := &recordingMetrics{outcomes: map[string]int{}}
+	h.metrics = rec
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const n = 10
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := http.Get(ts.URL + "/registry.terraform.io/hashicorp/null/index.json")
+			if err != nil {
+				t.Errorf("GET: %v", err)
+				return
+			}
+			resp.Body.Close()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// One request led the upstream fetch; the rest shared it. Requests that
+	// arrive after the leader stored the result may count as "fresh" instead of
+	// "coalesced" — either way, exactly one revalidation happened and every
+	// request recorded exactly one outcome.
+	if rec.outcomes[outcomeRevalidated] != 1 {
+		t.Errorf("revalidated = %d, want 1 (outcomes: %v)", rec.outcomes[outcomeRevalidated], rec.outcomes)
+	}
+	total := 0
+	for _, c := range rec.outcomes {
+		total += c
+	}
+	if total != n {
+		t.Errorf("total outcomes = %d, want %d (outcomes: %v)", total, n, rec.outcomes)
+	}
+	if got := reg.hits.Load(); got != 1 {
+		t.Errorf("upstream versions fetches = %d, want 1", got)
 	}
 }
 

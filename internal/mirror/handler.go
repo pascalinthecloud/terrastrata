@@ -36,8 +36,9 @@ type Metrics interface {
 	CacheLookup(resource string, hit bool)
 	// VersionsIndexOutcome records how a versions-index request was satisfied:
 	// "fresh" (served within TTL), "revalidated" (refetched from upstream),
-	// "stale" (served last-known-good after an upstream failure), or "error"
-	// (upstream failed with no cached copy to fall back on).
+	// "coalesced" (waited on a concurrent request's refetch), "stale" (served
+	// last-known-good after an upstream failure), or "error" (upstream failed
+	// with no cached copy to fall back on).
 	VersionsIndexOutcome(outcome string)
 }
 
@@ -45,6 +46,7 @@ type Metrics interface {
 const (
 	outcomeFresh       = "fresh"
 	outcomeRevalidated = "revalidated"
+	outcomeCoalesced   = "coalesced"
 	outcomeStale       = "stale"
 	outcomeError       = "error"
 )
@@ -193,9 +195,13 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stale or absent: (re)validate against upstream, coalescing concurrent
-	// revalidations of the same index into one upstream call.
+	// revalidations of the same index into one upstream call. led records
+	// whether this request ran the fetch (singleflight runs only the leader's
+	// closure); the channel receive inside coalesce orders the write safely.
 	dctx := context.WithoutCancel(r.Context())
+	led := false
 	v, err := h.coalesce(r.Context(), key, func() (any, error) {
+		led = true
 		body, ferr := h.fetchVersions(dctx, c)
 		if ferr != nil {
 			return nil, ferr
@@ -220,7 +226,14 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.metrics.CacheLookup("versions", false)
-	h.metrics.VersionsIndexOutcome(outcomeRevalidated)
+	// Only the request that actually fetched counts as "revalidated"; waiters
+	// that shared its result count as "coalesced", so the revalidated series
+	// tracks real upstream fetches instead of inflating under a herd.
+	if led {
+		h.metrics.VersionsIndexOutcome(outcomeRevalidated)
+	} else {
+		h.metrics.VersionsIndexOutcome(outcomeCoalesced)
+	}
 	writeBody(w, "application/json", "MISS", v.([]byte))
 }
 

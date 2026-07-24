@@ -48,7 +48,7 @@ func NewMetrics() *Metrics {
 		}, []string{"route"}),
 		versionsIndex: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "terrastrata_versions_index_total",
-			Help: "Versions-index requests by freshness outcome (fresh, revalidated, stale, error).",
+			Help: "Versions-index requests by freshness outcome (fresh, revalidated, coalesced, stale, error).",
 		}, []string{"outcome"}),
 		prewarm: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "terrastrata_prewarm_total",
