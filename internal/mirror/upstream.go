@@ -111,7 +111,10 @@ func (u *Upstream) GetDownload(ctx context.Context, c Coordinates, os, arch stri
 // plain http when the upstream base itself is http (dev/MinIO setups).
 func (u *Upstream) FetchZip(ctx context.Context, downloadURL string) (io.ReadCloser, error) {
 	parsed, err := url.Parse(downloadURL)
-	if err != nil || !(parsed.Scheme == "https" || (parsed.Scheme == "http" && u.allowHTTP)) {
+	if err != nil {
+		return nil, fmt.Errorf("upstream: refusing download url %q (https required)", downloadURL)
+	}
+	if allowed := parsed.Scheme == "https" || (parsed.Scheme == "http" && u.allowHTTP); !allowed {
 		return nil, fmt.Errorf("upstream: refusing download url %q (https required)", downloadURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)

@@ -80,43 +80,48 @@ func newTestServer(t *testing.T, cfg config.Config, blobCache mirror.Cache) (*ht
 	return ts, metrics
 }
 
-func get(t *testing.T, url string) (*http.Response, string) {
+// httpResult captures what tests assert on, so no response body escapes the
+// helper unclosed.
+type httpResult struct {
+	status int
+	body   string
+}
+
+func get(t *testing.T, url string) httpResult {
 	t.Helper()
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
+	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	return resp, string(body)
+	return httpResult{status: resp.StatusCode, body: string(body)}
 }
 
 func TestServerWiringSmoke(t *testing.T) {
 	reg := newFakeRegistry(t)
 	ts, _ := newTestServer(t, config.Config{UpstreamBase: reg.URL}, nil)
 
-	resp, body := get(t, ts.URL+"/health")
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"status":"ok"`) {
-		t.Errorf("/health = %d %q", resp.StatusCode, body)
+	health := get(t, ts.URL+"/health")
+	if health.status != http.StatusOK || !strings.Contains(health.body, `"status":"ok"`) {
+		t.Errorf("/health = %d %q", health.status, health.body)
 	}
 
-	resp, _ = get(t, ts.URL+"/")
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("/ = %d, want 404", resp.StatusCode)
+	if root := get(t, ts.URL+"/"); root.status != http.StatusNotFound {
+		t.Errorf("/ = %d, want 404", root.status)
 	}
 
 	// One mirror request, then its route pattern must appear as a metrics label
 	// (pins r.Pattern population through the nested muxes).
-	resp, _ = get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("index.json = %d, want 200", resp.StatusCode)
+	if idx := get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json"); idx.status != http.StatusOK {
+		t.Fatalf("index.json = %d, want 200", idx.status)
 	}
-	resp, body = get(t, ts.URL+"/metrics")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("/metrics = %d", resp.StatusCode)
+	metrics := get(t, ts.URL+"/metrics")
+	if metrics.status != http.StatusOK {
+		t.Fatalf("/metrics = %d", metrics.status)
 	}
 	wantLabel := `route="GET /{hostname}/{namespace}/{type}/index.json"`
-	if !strings.Contains(body, wantLabel) {
+	if !strings.Contains(metrics.body, wantLabel) {
 		t.Errorf("/metrics missing %s", wantLabel)
 	}
 }
@@ -125,14 +130,12 @@ func TestAuthProtectsMirrorRoutesOnly(t *testing.T) {
 	reg := newFakeRegistry(t)
 	ts, _ := newTestServer(t, config.Config{UpstreamBase: reg.URL, AuthToken: "sekrit"}, nil)
 
-	resp, _ := get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json")
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("mirror route without token = %d, want 401", resp.StatusCode)
+	if r := get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json"); r.status != http.StatusUnauthorized {
+		t.Errorf("mirror route without token = %d, want 401", r.status)
 	}
 	for _, open := range []string{"/health", "/metrics"} {
-		resp, _ := get(t, ts.URL+open)
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("%s = %d, want 200 (unauthenticated)", open, resp.StatusCode)
+		if r := get(t, ts.URL+open); r.status != http.StatusOK {
+			t.Errorf("%s = %d, want 200 (unauthenticated)", open, r.status)
 		}
 	}
 
@@ -159,12 +162,10 @@ func TestPanickingRequestIsRecordedInMetrics(t *testing.T) {
 	reg := newFakeRegistry(t)
 	ts, _ := newTestServer(t, config.Config{UpstreamBase: reg.URL}, panicCache{})
 
-	resp, _ := get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json")
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("panicking route = %d, want 500", resp.StatusCode)
+	if r := get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json"); r.status != http.StatusInternalServerError {
+		t.Fatalf("panicking route = %d, want 500", r.status)
 	}
-	_, body := get(t, ts.URL+"/metrics")
-	if !strings.Contains(body, `code="500"`) {
+	if metrics := get(t, ts.URL+"/metrics"); !strings.Contains(metrics.body, `code="500"`) {
 		t.Error("/metrics missing code=\"500\" for panicking request")
 	}
 }

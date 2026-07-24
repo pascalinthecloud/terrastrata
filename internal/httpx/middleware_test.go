@@ -12,7 +12,7 @@ import (
 
 func TestRequestIDGeneratesWhenAbsent(t *testing.T) {
 	var seen string
-	h := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := RequestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = RequestIDFromContext(r.Context())
 	}))
 	rec := httptest.NewRecorder()
@@ -28,7 +28,7 @@ func TestRequestIDGeneratesWhenAbsent(t *testing.T) {
 
 func TestRequestIDReusesInboundHeader(t *testing.T) {
 	var seen string
-	h := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := RequestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = RequestIDFromContext(r.Context())
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
