@@ -29,10 +29,18 @@ jobs:
       - name: helm lint
         run: helm lint deploy/helm/terrastrata
 
-      - name: Log in to GHCR
+      # Two logins: helm push reads helm's registry config, while cosign reads
+      # the Docker credential store — logging into only one breaks the other.
+      - name: Log in to GHCR (helm)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Log in to GHCR (cosign)
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package chart
         id: pkg
