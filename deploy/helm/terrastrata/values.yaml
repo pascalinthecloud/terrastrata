@@ -31,9 +31,10 @@ config:
   logLevel: "info"
   # Versions-index freshness window (Go duration); "0" disables expiry.
   indexTTL: "10m"
-  # Local cache size budget (e.g. "18GB"); empty/"0" disables eviction. Set a few
-  # GB below persistence.size so the volume never fills.
-  cacheMaxBytes: ""
+  # Local cache size budget; LRU eviction keeps the cache under it. Keep it a
+  # few GB below persistence.size so the volume never fills (the default tracks
+  # the 20Gi default PVC). Empty/"0" disables eviction (unbounded growth).
+  cacheMaxBytes: "18GB"
 
 # Optional startup cache pre-warming.
 #   providers: list of "[host/]namespace/type[@version]"
@@ -58,8 +59,12 @@ s3:
   prefix: "tf-mirror"
   endpoint: "" # e.g. https://s3.de.io.cloud.ovh.net (leave blank for AWS)
   region: "us-east-1"
-  # Provide credentials inline (chart creates a Secret) or via existingSecret
-  # with keys S3_ACCESS_KEY / S3_SECRET_KEY.
+  # Credentials, in order of preference:
+  #   1. existingSecret with keys S3_ACCESS_KEY / S3_SECRET_KEY (recommended for
+  #      production — keeps secrets out of values files and release history)
+  #   2. accessKey/secretKey inline (chart creates a Secret)
+  #   3. all empty: the AWS default credential chain (IRSA, instance profile).
+  #      For IRSA, annotate the service account via serviceAccount.annotations.
   accessKey: ""
   secretKey: ""
   existingSecret: ""
@@ -123,6 +128,8 @@ securityContext:
 serviceAccount:
   create: true
   name: ""
+  # e.g. eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/terrastrata
+  annotations: {}
 
 podAnnotations:
   prometheus.io/scrape: "true"

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,6 +34,8 @@ type fakeRegistry struct {
 	// zipDelay holds the /zip handler briefly to widen the window in which
 	// concurrent requests overlap, making coalescing observable.
 	zipDelay time.Duration
+	// versionsDelay does the same for the /versions endpoint.
+	versionsDelay time.Duration
 }
 
 func newFakeRegistry(t *testing.T) *fakeRegistry {
@@ -45,6 +48,9 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/providers/hashicorp/null/versions", func(w http.ResponseWriter, _ *http.Request) {
 		fr.hits.Add(1)
+		if fr.versionsDelay > 0 {
+			time.Sleep(fr.versionsDelay)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"versions": []map[string]any{
 				{"version": "3.2.0", "platforms": []map[string]string{{"os": "linux", "arch": "amd64"}}},
@@ -94,6 +100,7 @@ func newTestHandlerTTL(t *testing.T, base string, ttl time.Duration) *Handler {
 		Cache:      c,
 		Upstream:   u,
 		Metrics:    NopMetrics{},
+		Hostname:   "registry.terraform.io",
 		StagingDir: t.TempDir(),
 		IndexTTL:   ttl,
 		Logger:     log,
@@ -187,6 +194,9 @@ func TestEndToEndCachingFlow(t *testing.T) {
 	if got := resp.Header.Get("X-Cache"); got != "HIT" {
 		t.Errorf("second zip X-Cache = %q, want HIT", got)
 	}
+	if got := resp.ContentLength; got != int64(len(reg.zipBytes)) {
+		t.Errorf("cached zip Content-Length = %d, want %d", got, len(reg.zipBytes))
+	}
 	resp.Body.Close()
 	if reg.hits.Load() != hitsAfterZip {
 		t.Error("cached zip request still hit upstream")
@@ -259,6 +269,47 @@ func TestUnknownProviderReturns404(t *testing.T) {
 	}
 }
 
+func TestMismatchedHostnameReturns404AndNeverReachesUpstream(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// A hostname this mirror does not serve must 404 on every endpoint without
+	// contacting upstream or caching anything under the foreign key.
+	for _, p := range []string{
+		"/evil.example/hashicorp/null/index.json",
+		"/evil.example/hashicorp/null/3.2.0.json",
+		"/evil.example/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip",
+	} {
+		resp := doGet(t, ts, p)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, resp.StatusCode)
+		}
+	}
+	if got := reg.hits.Load(); got != 0 {
+		t.Errorf("mismatched hostname reached upstream %d times, want 0", got)
+	}
+}
+
+func TestHostnameMatchIsCaseInsensitive(t *testing.T) {
+	reg := newFakeRegistry(t)
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp := doGet(t, ts, "/Registry.Terraform.IO/hashicorp/null/index.json")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 for case-insensitive hostname match", resp.StatusCode)
+	}
+}
+
 func TestInvalidPathReturns400(t *testing.T) {
 	reg := newFakeRegistry(t)
 	h := newTestHandler(t, reg.server.URL)
@@ -312,6 +363,49 @@ func TestZipMissingUpstreamChecksumIsRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 when upstream provides no checksum", resp.StatusCode)
+	}
+}
+
+func TestZipUppercaseUpstreamChecksumVerifies(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.servedShasum = strings.ToUpper(reg.zipSum) // uppercase hex is valid
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	zipPath := "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+	resp := doGet(t, ts, zipPath)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for uppercase upstream shasum", resp.StatusCode)
+	}
+	if string(body) != string(reg.zipBytes) {
+		t.Error("zip bytes mismatch")
+	}
+	resp = doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got != "HIT" {
+		t.Errorf("second zip X-Cache = %q, want HIT", got)
+	}
+}
+
+func TestZipMalformedUpstreamChecksumIsRejected(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.servedShasum = "zz" + reg.zipSum[2:] // right length, not hex
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	zipPath := "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+	resp := doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for malformed upstream shasum", resp.StatusCode)
 	}
 }
 
@@ -466,6 +560,56 @@ func TestVersionsIndexMetricsOutcomes(t *testing.T) {
 		if rec.outcomes[outcome] != n {
 			t.Errorf("outcome %q = %d, want %d (all: %v)", outcome, rec.outcomes[outcome], n, rec.outcomes)
 		}
+	}
+}
+
+func TestConcurrentColdVersionsRequestsRecordOneRevalidation(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.versionsDelay = 50 * time.Millisecond // widen the overlap window
+	h := newTestHandlerTTL(t, reg.server.URL, time.Minute)
+	rec := &recordingMetrics{outcomes: map[string]int{}}
+	h.metrics = rec
+
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	const n = 10
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			resp, err := http.Get(ts.URL + "/registry.terraform.io/hashicorp/null/index.json")
+			if err != nil {
+				t.Errorf("GET: %v", err)
+				return
+			}
+			resp.Body.Close()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	// One request led the upstream fetch; the rest shared it. Requests that
+	// arrive after the leader stored the result may count as "fresh" instead of
+	// "coalesced" — either way, exactly one revalidation happened and every
+	// request recorded exactly one outcome.
+	if rec.outcomes[outcomeRevalidated] != 1 {
+		t.Errorf("revalidated = %d, want 1 (outcomes: %v)", rec.outcomes[outcomeRevalidated], rec.outcomes)
+	}
+	total := 0
+	for _, c := range rec.outcomes {
+		total += c
+	}
+	if total != n {
+		t.Errorf("total outcomes = %d, want %d (outcomes: %v)", total, n, rec.outcomes)
+	}
+	if got := reg.hits.Load(); got != 1 {
+		t.Errorf("upstream versions fetches = %d, want 1", got)
 	}
 }
 

@@ -76,7 +76,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: terrastrata
-          image: ghcr.io/pascalinthecloud/terrastrata:latest
+          # Pin to a release; for production, pin by digest instead
+          # (ghcr.io/pascalinthecloud/terrastrata@sha256:...) — see README.
+          image: ghcr.io/pascalinthecloud/terrastrata:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

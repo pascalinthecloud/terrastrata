@@ -37,6 +37,36 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.IndexTTL != DefaultIndexTTL {
 		t.Errorf("IndexTTL = %v, want %v", cfg.IndexTTL, DefaultIndexTTL)
 	}
+	if cfg.MirrorHostname != "registry.terraform.io" {
+		t.Errorf("MirrorHostname = %q, want registry.terraform.io", cfg.MirrorHostname)
+	}
+}
+
+func TestFromEnvMirrorHostname(t *testing.T) {
+	t.Run("derived from custom upstream", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("UPSTREAM_BASE", "https://registry.corp.example:8443")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.MirrorHostname != "registry.corp.example:8443" {
+			t.Errorf("MirrorHostname = %q, want registry.corp.example:8443", cfg.MirrorHostname)
+		}
+	})
+
+	t.Run("explicit override wins", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MIRROR_HOSTNAME", "registry.terraform.io")
+		t.Setenv("UPSTREAM_BASE", "https://registry-proxy.corp.example")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.MirrorHostname != "registry.terraform.io" {
+			t.Errorf("MirrorHostname = %q, want registry.terraform.io", cfg.MirrorHostname)
+		}
+	})
 }
 
 func TestFromEnvIndexTTL(t *testing.T) {
@@ -95,12 +125,29 @@ func TestFromEnvTrimsTrailingSlashes(t *testing.T) {
 	}
 }
 
-func TestFromEnvS3RequiresCredentials(t *testing.T) {
+func TestFromEnvS3BucketWithoutStaticCredentials(t *testing.T) {
+	// No static keys means the AWS default credential chain: valid.
 	clearEnv(t)
 	t.Setenv("S3_BUCKET", "my-bucket")
 
-	if _, err := FromEnv(); err == nil {
-		t.Fatal("expected error when S3_BUCKET set without credentials")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if !cfg.S3.Enabled() {
+		t.Error("S3 should be enabled with bucket alone (default credential chain)")
+	}
+}
+
+func TestFromEnvS3RejectsPartialStaticCredentials(t *testing.T) {
+	for _, partial := range []string{"S3_ACCESS_KEY", "S3_SECRET_KEY"} {
+		clearEnv(t)
+		t.Setenv("S3_BUCKET", "my-bucket")
+		t.Setenv(partial, "only-one-half")
+
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("expected error with only %s set", partial)
+		}
 	}
 }
 
@@ -272,7 +319,7 @@ func TestParseLogLevel(t *testing.T) {
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"LISTEN_ADDR", "CACHE_DIR", "UPSTREAM_BASE", "AUTH_TOKEN", "LOG_LEVEL", "INDEX_TTL",
+		"LISTEN_ADDR", "CACHE_DIR", "UPSTREAM_BASE", "MIRROR_HOSTNAME", "AUTH_TOKEN", "LOG_LEVEL", "INDEX_TTL",
 		"S3_BUCKET", "S3_PREFIX", "S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY",
 		"PREWARM_PROVIDERS", "PREWARM_PLATFORMS", "CACHE_MAX_BYTES",
 	} {

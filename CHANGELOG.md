@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Layered cache: an S3 hit is served even when warming it into the local layer
+  fails (degraded disk); previously the request errored and fell back upstream.
+- Zip checksum verification accepts uppercase hex digests and rejects malformed
+  (non-SHA-256) digests before downloading.
+- Panicking requests now appear in metrics and the access log with status 500;
+  previously they were only visible to the client.
+
+### Changed
+
+- **Breaking:** requests whose `{hostname}` path segment does not match the
+  mirror's hostname now return 404 instead of being proxied to the configured
+  upstream. The hostname defaults to the host of `UPSTREAM_BASE`; set
+  `MIRROR_HOSTNAME` when clients address the mirror's providers by a different
+  name. Objects previously cached under mismatched hostnames become unreachable
+  (harmless — eviction ages them out, or delete them manually).
+- Provider download URLs published by the registry must be `https` unless
+  `UPSTREAM_BASE` itself is `http` (local/dev setups).
+- `terrastrata_versions_index_total` gained the outcome label value
+  `"coalesced"`: requests that waited on a concurrent revalidation no longer
+  count as `"revalidated"`, so that series now tracks real upstream fetches.
+  Update dashboards that sum specific outcome values.
+- Helm chart: `config.cacheMaxBytes` now defaults to `18GB` (matching the
+  default 20Gi PVC) so a default install cannot fill its volume; set it to `""`
+  for the previous unbounded behavior.
+- CI: all GitHub Actions pinned by commit SHA, chart/manifest validation job
+  (helm lint + kubeconform), and a weekly Trivy re-scan of the published image.
+
+### Added
+
+- AWS default credential chain for S3: leave `S3_ACCESS_KEY`/`S3_SECRET_KEY`
+  empty to use IRSA, instance profiles, or environment credentials. The Helm
+  chart skips the credentials Secret accordingly and supports
+  `serviceAccount.annotations` for IRSA role binding.
+- `Content-Length` on cache-served responses.
+
 ## [0.2.0] - 2026-06-11
 
 ### Added

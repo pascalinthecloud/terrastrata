@@ -19,7 +19,8 @@ import (
 	"github.com/pascalinthecloud/terrastrata/internal/mirror"
 )
 
-// defaultHostname is assumed when a provider entry omits the registry host.
+// defaultHostname is assumed when a provider entry omits the registry host and
+// no mirror hostname was supplied.
 const defaultHostname = "registry.terraform.io"
 
 // maxConcurrency bounds how many providers are warmed in parallel.
@@ -48,14 +49,18 @@ type Entry struct {
 	Version   string
 }
 
-// parseEntry parses "[host/]namespace/type[@version]".
-func parseEntry(raw string) (Entry, error) {
+// parseEntry parses "[host/]namespace/type[@version]". Entries without a host
+// default to defaultHost (the hostname the mirror serves).
+func parseEntry(raw, defaultHost string) (Entry, error) {
+	if defaultHost == "" {
+		defaultHost = defaultHostname
+	}
 	pathPart, version, _ := strings.Cut(raw, "@")
 	segs := strings.Split(pathPart, "/")
 	var e Entry
 	switch len(segs) {
 	case 2:
-		e = Entry{Hostname: defaultHostname, Namespace: segs[0], Type: segs[1]}
+		e = Entry{Hostname: defaultHost, Namespace: segs[0], Type: segs[1]}
 	case 3:
 		e = Entry{Hostname: segs[0], Namespace: segs[1], Type: segs[2]}
 	default:
@@ -69,8 +74,10 @@ func parseEntry(raw string) (Entry, error) {
 }
 
 // Run warms every configured provider through handler, concurrently and
-// best-effort. It returns when all warming is done or ctx is cancelled.
-func Run(ctx context.Context, handler http.Handler, providers, platforms []string, metrics Metrics, log *slog.Logger) {
+// best-effort. Entries without an explicit host default to hostname (the
+// hostname the mirror serves). It returns when all warming is done or ctx is
+// cancelled.
+func Run(ctx context.Context, handler http.Handler, hostname string, providers, platforms []string, metrics Metrics, log *slog.Logger) {
 	if metrics == nil {
 		metrics = NopMetrics{}
 	}
@@ -79,7 +86,7 @@ func Run(ctx context.Context, handler http.Handler, providers, platforms []strin
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	for _, raw := range providers {
-		entry, err := parseEntry(raw)
+		entry, err := parseEntry(raw, hostname)
 		if err != nil {
 			log.Warn("prewarm skip", "entry", raw, "err", err)
 			continue

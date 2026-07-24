@@ -96,11 +96,12 @@ set without credentials).
 | `CACHE_DIR` | `/cache` | Local filesystem cache root |
 | `CACHE_MAX_BYTES` | _(empty)_ | Local cache size budget (`20GB`/`512Mi`/bytes); LRU eviction over it. Empty/`0` = unbounded |
 | `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry |
+| `MIRROR_HOSTNAME` | _(host of `UPSTREAM_BASE`)_ | Hostname the mirror serves (the `{hostname}` path segment); other hostnames 404 |
 | `S3_BUCKET` | _(empty)_ | S3 bucket — leave empty to disable S3 |
 | `S3_PREFIX` | `tf-mirror` | S3 key prefix |
 | `S3_ENDPOINT` | _(empty)_ | Custom S3 endpoint (OVH, MinIO, etc.) |
 | `S3_REGION` | `us-east-1` | S3 region |
-| `S3_ACCESS_KEY` | _(empty)_ | S3 credentials |
+| `S3_ACCESS_KEY` | _(empty)_ | S3 credentials — set with `S3_SECRET_KEY` or leave both empty for the AWS default credential chain (IRSA etc.) |
 | `S3_SECRET_KEY` | _(empty)_ | S3 credentials |
 | `AUTH_TOKEN` | _(empty)_ | Optional bearer token on mirror endpoints; empty = auth disabled |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
@@ -120,8 +121,8 @@ set without credentials).
   staging dir and in-progress temp files.
 
 ### `internal/mirror`
-- `paths.go` — strict validation of every request coordinate (traversal-proof); the cache's first line of defense.
-- `upstream.go` — registry-protocol client (`/v1/providers/...`) with transport-level timeouts and bounded response bodies.
+- `paths.go` — strict validation of every request coordinate (traversal-proof); the cache's first line of defense. The handler additionally rejects (404) any `{hostname}` that is not the configured mirror hostname, so foreign hostnames can never alias upstream content under a different cache key.
+- `upstream.go` — registry-protocol client (`/v1/providers/...`) with transport-level timeouts and bounded response bodies. Download URLs must be https unless `UPSTREAM_BASE` itself is http (dev/MinIO).
 - `protocol.go` — translation from registry responses to mirror responses, concurrent (bounded) archives assembly, cache-key helpers.
 - `handler.go` — `http.Handler` over a `ServeMux`. Routes:
   - `GET /:hostname/:namespace/:type/index.json` — versions index
@@ -142,7 +143,7 @@ Cross-cutting HTTP middleware (request-id, structured access logging, panic
 recovery, optional constant-time bearer auth) and observability (JSON `slog`
 logger + private Prometheus registry on `/metrics`). Metrics: `cache_lookups_total`,
 `http_requests_total`, `http_request_duration_seconds`, `versions_index_total`
-(freshness outcome: fresh/revalidated/stale/error), `prewarm_total`,
+(freshness outcome: fresh/revalidated/coalesced/stale/error), `prewarm_total`,
 `cache_size_bytes` + `cache_evictions_total`, plus Go/process
 collectors. `/health` and `/metrics` are
 unauthenticated; mirror routes sit behind optional auth.

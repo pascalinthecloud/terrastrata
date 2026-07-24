@@ -48,6 +48,13 @@ type Config struct {
 	CacheDir     string
 	UpstreamBase string
 
+	// MirrorHostname is the registry hostname clients address providers by (the
+	// {hostname} path segment); requests for any other hostname are rejected.
+	// Defaults to the host of UpstreamBase. Override with MIRROR_HOSTNAME when
+	// clients request a different name than the upstream URL (for example, an
+	// internal proxy of registry.terraform.io reached under another address).
+	MirrorHostname string
+
 	// AuthToken, when non-empty, enables bearer-token authentication on the
 	// mirror endpoints. Empty means auth is disabled (the default internal mode).
 	AuthToken string
@@ -97,6 +104,7 @@ func FromEnv() (Config, error) {
 		ListenAddr:      envOr("LISTEN_ADDR", DefaultListenAddr),
 		CacheDir:        envOr("CACHE_DIR", DefaultCacheDir),
 		UpstreamBase:    strings.TrimRight(envOr("UPSTREAM_BASE", DefaultUpstreamBase), "/"),
+		MirrorHostname:  os.Getenv("MIRROR_HOSTNAME"),
 		AuthToken:       os.Getenv("AUTH_TOKEN"),
 		UpstreamTimeout: DefaultUpstreamTimeout,
 		S3: S3Config{
@@ -136,6 +144,12 @@ func FromEnv() (Config, error) {
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
+	// Default the served hostname to the upstream's host; validate() guarantees
+	// UpstreamBase parses.
+	if cfg.MirrorHostname == "" {
+		u, _ := url.Parse(cfg.UpstreamBase)
+		cfg.MirrorHostname = u.Host
+	}
 	return cfg, nil
 }
 
@@ -168,21 +182,16 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: UPSTREAM_BASE scheme %q must be http or https", u.Scheme)
 	}
 
-	// S3 is all-or-nothing: enabling the bucket requires credentials so we fail
-	// at startup instead of on the first async upload.
+	// Static S3 credentials are both-or-neither: a partial pair is a
+	// misconfiguration we fail on at startup instead of on the first async
+	// upload. Both empty means the AWS default credential chain (environment,
+	// shared config, IRSA, instance profile) is used.
 	if c.S3.Enabled() {
-		var missing []string
-		if c.S3.AccessKey == "" {
-			missing = append(missing, "S3_ACCESS_KEY")
-		}
-		if c.S3.SecretKey == "" {
-			missing = append(missing, "S3_SECRET_KEY")
+		if (c.S3.AccessKey == "") != (c.S3.SecretKey == "") {
+			return errors.New("config: S3_ACCESS_KEY and S3_SECRET_KEY must be set together (leave both empty to use the AWS default credential chain)")
 		}
 		if c.S3.Region == "" {
-			missing = append(missing, "S3_REGION")
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("config: S3_BUCKET is set but %s missing", strings.Join(missing, ", "))
+			return errors.New("config: S3_BUCKET is set but S3_REGION missing")
 		}
 		// Validate the custom endpoint at startup rather than failing on the first
 		// upload: a scheme-less value would otherwise be accepted here and only

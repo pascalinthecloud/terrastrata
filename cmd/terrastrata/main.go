@@ -68,8 +68,14 @@ func run() error {
 	}
 	var durable cache.Cache
 	if cfg.S3.Enabled() {
-		durable = cache.NewS3(cfg.S3)
-		logger.Info("durable S3 cache enabled", "bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint)
+		s3c, err := cache.NewS3(context.Background(), cfg.S3)
+		if err != nil {
+			return err
+		}
+		durable = s3c
+		logger.Info("durable S3 cache enabled",
+			"bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint,
+			"static_credentials", cfg.S3.AccessKey != "")
 	}
 	blobCache := cache.NewLayered(local, durable, logger)
 
@@ -79,6 +85,7 @@ func run() error {
 		Cache:    blobCache,
 		Upstream: upstream,
 		Metrics:  metrics,
+		Hostname: cfg.MirrorHostname,
 		// Stage zips under the cache dir: the container root filesystem is
 		// read-only, so this is the writable volume available for verification.
 		StagingDir: filepath.Join(cfg.CacheDir, ".staging"),
@@ -95,6 +102,7 @@ func run() error {
 		"version", version,
 		"addr", cfg.ListenAddr,
 		"upstream", cfg.UpstreamBase,
+		"hostname", cfg.MirrorHostname,
 		"cache_dir", cfg.CacheDir,
 		"s3", cfg.S3.Enabled(),
 		"auth", cfg.AuthToken != "",
@@ -117,7 +125,7 @@ func run() error {
 	if len(cfg.PrewarmProviders) > 0 {
 		mirrorMux := http.NewServeMux()
 		handler.Routes(mirrorMux)
-		go prewarm.Run(ctx, mirrorMux, cfg.PrewarmProviders, cfg.PrewarmPlatforms, metrics, logger)
+		go prewarm.Run(ctx, mirrorMux, cfg.MirrorHostname, cfg.PrewarmProviders, cfg.PrewarmPlatforms, metrics, logger)
 	}
 
 	return serve(ctx, srv, logger)
@@ -141,11 +149,14 @@ func buildServer(cfg config.Config, h *mirror.Handler, metrics *observ.Metrics, 
 		http.Error(w, "terrastrata: Terraform provider network mirror", http.StatusNotFound)
 	})
 
+	// Recovery sits innermost so the 500 it writes lands in the shared
+	// ResponseRecorder and panicking requests still show up in metrics and the
+	// access log (both do their accounting after next.ServeHTTP returns).
 	handler := httpx.Chain(root,
-		httpx.Recovery(logger),
 		httpx.RequestID,
 		metrics.Middleware, // creates the ResponseRecorder reused downstream
 		httpx.Logging(logger),
+		httpx.Recovery(logger),
 	)
 
 	return &http.Server{

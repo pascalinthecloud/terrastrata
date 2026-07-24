@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
@@ -30,13 +31,20 @@ type S3 struct {
 	prefix string
 }
 
-// NewS3 builds an S3 cache from configuration. It uses static credentials and an
-// optional custom endpoint (path-style addressing is enabled for custom
-// endpoints, which MinIO and OVH require).
-func NewS3(cfg config.S3Config) *S3 {
-	opts := s3.Options{
-		Region:      cfg.Region,
-		Credentials: credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+// NewS3 builds an S3 cache from configuration. Static credentials are used when
+// configured; otherwise the AWS default credential chain applies (environment,
+// shared config, IRSA, instance profile). An optional custom endpoint enables
+// path-style addressing, which MinIO and OVH require.
+func NewS3(ctx context.Context, cfg config.S3Config) (*S3, error) {
+	opts := s3.Options{Region: cfg.Region}
+	if cfg.AccessKey != "" {
+		opts.Credentials = credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, "")
+	} else {
+		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
+		if err != nil {
+			return nil, fmt.Errorf("cache: load AWS default credential chain: %w", err)
+		}
+		opts.Credentials = awsCfg.Credentials
 	}
 	if cfg.Endpoint != "" {
 		opts.BaseEndpoint = aws.String(cfg.Endpoint)
@@ -46,7 +54,7 @@ func NewS3(cfg config.S3Config) *S3 {
 		client: s3.New(opts),
 		bucket: cfg.Bucket,
 		prefix: strings.Trim(cfg.Prefix, "/"),
-	}
+	}, nil
 }
 
 // objectKey prepends the configured prefix to a cache key.
