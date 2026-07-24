@@ -194,6 +194,9 @@ func TestEndToEndCachingFlow(t *testing.T) {
 	if got := resp.Header.Get("X-Cache"); got != "HIT" {
 		t.Errorf("second zip X-Cache = %q, want HIT", got)
 	}
+	if got := resp.ContentLength; got != int64(len(reg.zipBytes)) {
+		t.Errorf("cached zip Content-Length = %d, want %d", got, len(reg.zipBytes))
+	}
 	resp.Body.Close()
 	if reg.hits.Load() != hitsAfterZip {
 		t.Error("cached zip request still hit upstream")

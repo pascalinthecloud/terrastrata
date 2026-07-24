@@ -563,10 +563,22 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, key, re
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Cache", "HIT")
+	setContentLength(w, rc)
 	if _, err := io.Copy(w, rc); err != nil {
 		h.log.Warn("write cached response failed", "key", key, "err", err)
 	}
 	return true
+}
+
+// setContentLength advertises the response size when the cache stream can
+// report it (the local layer hands back an *os.File). Streams that cannot
+// (e.g. a direct S3 fallback) are served chunked instead.
+func setContentLength(w http.ResponseWriter, rc io.Reader) {
+	if s, ok := rc.(interface{ Stat() (os.FileInfo, error) }); ok {
+		if info, err := s.Stat(); err == nil {
+			w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		}
+	}
 }
 
 // streamFromCache writes a cache entry to the response with an explicit X-Cache
@@ -586,6 +598,7 @@ func (h *Handler) streamFromCache(w http.ResponseWriter, r *http.Request, key, c
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Cache", status)
+	setContentLength(w, rc)
 	if _, err := io.Copy(w, rc); err != nil {
 		h.log.Warn("write cached response failed", "key", key, "err", err)
 	}
