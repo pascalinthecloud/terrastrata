@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -312,6 +313,49 @@ func TestZipMissingUpstreamChecksumIsRejected(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 when upstream provides no checksum", resp.StatusCode)
+	}
+}
+
+func TestZipUppercaseUpstreamChecksumVerifies(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.servedShasum = strings.ToUpper(reg.zipSum) // uppercase hex is valid
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	zipPath := "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+	resp := doGet(t, ts, zipPath)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for uppercase upstream shasum", resp.StatusCode)
+	}
+	if string(body) != string(reg.zipBytes) {
+		t.Error("zip bytes mismatch")
+	}
+	resp = doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Cache"); got != "HIT" {
+		t.Errorf("second zip X-Cache = %q, want HIT", got)
+	}
+}
+
+func TestZipMalformedUpstreamChecksumIsRejected(t *testing.T) {
+	reg := newFakeRegistry(t)
+	reg.servedShasum = "zz" + reg.zipSum[2:] // right length, not hex
+	h := newTestHandler(t, reg.server.URL)
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	zipPath := "/registry.terraform.io/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+	resp := doGet(t, ts, zipPath)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 for malformed upstream shasum", resp.StatusCode)
 	}
 }
 

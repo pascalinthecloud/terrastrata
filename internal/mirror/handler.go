@@ -360,6 +360,9 @@ func (h *Handler) fetchStageZip(ctx context.Context, c Coordinates) (*os.File, i
 	if meta.Shasum == "" {
 		return nil, 0, errors.New("mirror: upstream provided no checksum")
 	}
+	if !isSHA256Hex(meta.Shasum) {
+		return nil, 0, fmt.Errorf("mirror: upstream checksum %q is not a SHA-256 hex digest", meta.Shasum)
+	}
 
 	rc, err := h.upstream.FetchZip(ctx, meta.DownloadURL)
 	if err != nil {
@@ -470,11 +473,22 @@ func (h *Handler) stageVerifiedZip(r io.Reader, wantSha string) (*os.File, int64
 		cleanup()
 		return nil, 0, fmt.Errorf("mirror: upstream zip exceeds %d byte limit", int64(maxZipBytes))
 	}
-	if got := hex.EncodeToString(hasher.Sum(nil)); got != wantSha {
+	// Case-insensitive: registries publish lowercase hex, but uppercase is
+	// equally valid and must not fail verification.
+	if got := hex.EncodeToString(hasher.Sum(nil)); !strings.EqualFold(got, wantSha) {
 		cleanup()
 		return nil, 0, errors.New("mirror: upstream zip checksum mismatch")
 	}
 	return f, size, nil
+}
+
+// isSHA256Hex reports whether s is a hex-encoded SHA-256 digest.
+func isSHA256Hex(s string) bool {
+	if len(s) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 // serveFromCache writes a cache hit to the response and reports whether it did.
