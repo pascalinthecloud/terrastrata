@@ -58,8 +58,12 @@ s3:
   prefix: "tf-mirror"
   endpoint: "" # e.g. https://s3.de.io.cloud.ovh.net (leave blank for AWS)
   region: "us-east-1"
-  # Provide credentials inline (chart creates a Secret) or via existingSecret
-  # with keys S3_ACCESS_KEY / S3_SECRET_KEY.
+  # Credentials, in order of preference:
+  #   1. existingSecret with keys S3_ACCESS_KEY / S3_SECRET_KEY (recommended for
+  #      production — keeps secrets out of values files and release history)
+  #   2. accessKey/secretKey inline (chart creates a Secret)
+  #   3. all empty: the AWS default credential chain (IRSA, instance profile).
+  #      For IRSA, annotate the service account via serviceAccount.annotations.
   accessKey: ""
   secretKey: ""
   existingSecret: ""
@@ -123,6 +127,8 @@ securityContext:
 serviceAccount:
   create: true
   name: ""
+  # e.g. eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/terrastrata
+  annotations: {}
 
 podAnnotations:
   prometheus.io/scrape: "true"

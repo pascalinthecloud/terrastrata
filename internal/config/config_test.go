@@ -125,12 +125,29 @@ func TestFromEnvTrimsTrailingSlashes(t *testing.T) {
 	}
 }
 
-func TestFromEnvS3RequiresCredentials(t *testing.T) {
+func TestFromEnvS3BucketWithoutStaticCredentials(t *testing.T) {
+	// No static keys means the AWS default credential chain: valid.
 	clearEnv(t)
 	t.Setenv("S3_BUCKET", "my-bucket")
 
-	if _, err := FromEnv(); err == nil {
-		t.Fatal("expected error when S3_BUCKET set without credentials")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if !cfg.S3.Enabled() {
+		t.Error("S3 should be enabled with bucket alone (default credential chain)")
+	}
+}
+
+func TestFromEnvS3RejectsPartialStaticCredentials(t *testing.T) {
+	for _, partial := range []string{"S3_ACCESS_KEY", "S3_SECRET_KEY"} {
+		clearEnv(t)
+		t.Setenv("S3_BUCKET", "my-bucket")
+		t.Setenv(partial, "only-one-half")
+
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("expected error with only %s set", partial)
+		}
 	}
 }
 

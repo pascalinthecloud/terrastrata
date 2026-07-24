@@ -68,8 +68,14 @@ func run() error {
 	}
 	var durable cache.Cache
 	if cfg.S3.Enabled() {
-		durable = cache.NewS3(cfg.S3)
-		logger.Info("durable S3 cache enabled", "bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint)
+		s3c, err := cache.NewS3(context.Background(), cfg.S3)
+		if err != nil {
+			return err
+		}
+		durable = s3c
+		logger.Info("durable S3 cache enabled",
+			"bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint,
+			"static_credentials", cfg.S3.AccessKey != "")
 	}
 	blobCache := cache.NewLayered(local, durable, logger)
 

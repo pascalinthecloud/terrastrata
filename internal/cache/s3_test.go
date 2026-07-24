@@ -138,7 +138,10 @@ func TestS3PutWrapsErrorWithKey(t *testing.T) {
 }
 
 func TestNewS3TrimsPrefixSlashes(t *testing.T) {
-	s := NewS3(testS3Config("/deep/prefix/"))
+	s, err := NewS3(context.Background(), testS3Config("/deep/prefix/"))
+	if err != nil {
+		t.Fatalf("NewS3: %v", err)
+	}
 	if s.prefix != "deep/prefix" {
 		t.Errorf("prefix = %q, want slashes trimmed", s.prefix)
 	}

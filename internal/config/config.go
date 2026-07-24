@@ -182,21 +182,16 @@ func (c Config) validate() error {
 		return fmt.Errorf("config: UPSTREAM_BASE scheme %q must be http or https", u.Scheme)
 	}
 
-	// S3 is all-or-nothing: enabling the bucket requires credentials so we fail
-	// at startup instead of on the first async upload.
+	// Static S3 credentials are both-or-neither: a partial pair is a
+	// misconfiguration we fail on at startup instead of on the first async
+	// upload. Both empty means the AWS default credential chain (environment,
+	// shared config, IRSA, instance profile) is used.
 	if c.S3.Enabled() {
-		var missing []string
-		if c.S3.AccessKey == "" {
-			missing = append(missing, "S3_ACCESS_KEY")
-		}
-		if c.S3.SecretKey == "" {
-			missing = append(missing, "S3_SECRET_KEY")
+		if (c.S3.AccessKey == "") != (c.S3.SecretKey == "") {
+			return errors.New("config: S3_ACCESS_KEY and S3_SECRET_KEY must be set together (leave both empty to use the AWS default credential chain)")
 		}
 		if c.S3.Region == "" {
-			missing = append(missing, "S3_REGION")
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("config: S3_BUCKET is set but %s missing", strings.Join(missing, ", "))
+			return errors.New("config: S3_BUCKET is set but S3_REGION missing")
 		}
 		// Validate the custom endpoint at startup rather than failing on the first
 		// upload: a scheme-less value would otherwise be accepted here and only
