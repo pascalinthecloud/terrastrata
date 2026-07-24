@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -92,6 +93,64 @@ func TestLayeredDurableHitWarmsLocal(t *testing.T) {
 	}
 }
 
+// brokenPutCache wraps a Cache so every Put fails after consuming the reader,
+// simulating a degraded local layer (full disk, bad volume).
+type brokenPutCache struct {
+	Cache
+	putErr error
+}
+
+func (b *brokenPutCache) Put(_ context.Context, _ string, r io.Reader) error {
+	_, _ = io.Copy(io.Discard, r) // consume, like a real write would
+	return b.putErr
+}
+
+// blindCache wraps a Cache so every Get misses, simulating a warm write whose
+// read-back fails.
+type blindCache struct{ Cache }
+
+func (blindCache) Get(context.Context, string) (io.ReadCloser, bool, error) {
+	return nil, false, nil
+}
+
+func TestLayeredDurableHitSurvivesWarmFailure(t *testing.T) {
+	local := &brokenPutCache{Cache: newMemCache(), putErr: errors.New("disk full")}
+	durable := newMemCache()
+	l := NewLayered(local, durable, discardLogger())
+	ctx := context.Background()
+
+	_ = durable.Put(ctx, "k", bytes.NewReader([]byte("durable-value")))
+
+	rc, hit, err := l.Get(ctx, "k")
+	if err != nil || !hit {
+		t.Fatalf("Get hit=%v err=%v, want durable hit despite warm failure", hit, err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "durable-value" {
+		t.Errorf("got %q, want durable-value", got)
+	}
+}
+
+func TestLayeredDurableHitSurvivesWarmReadBackFailure(t *testing.T) {
+	local := blindCache{newMemCache()}
+	durable := newMemCache()
+	l := NewLayered(local, durable, discardLogger())
+	ctx := context.Background()
+
+	_ = durable.Put(ctx, "k", bytes.NewReader([]byte("durable-value")))
+
+	rc, hit, err := l.Get(ctx, "k")
+	if err != nil || !hit {
+		t.Fatalf("Get hit=%v err=%v, want durable hit despite read-back failure", hit, err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "durable-value" {
+		t.Errorf("got %q, want durable-value", got)
+	}
+}
+
 func TestLayeredMiss(t *testing.T) {
 	l := NewLayered(newMemCache(), newMemCache(), discardLogger())
 	_, hit, err := l.Get(context.Background(), "absent")
@@ -129,6 +188,28 @@ func TestLayeredPutWritesBothLayers(t *testing.T) {
 	}
 	if !durable.has("k") {
 		t.Error("expected durable layer written asynchronously")
+	}
+}
+
+func TestLayeredPutReportsDurableError(t *testing.T) {
+	local := newMemCache()
+	wantErr := errors.New("bucket gone")
+	durable := &brokenPutCache{Cache: newMemCache(), putErr: wantErr}
+	l := NewLayered(local, durable, discardLogger())
+
+	done := make(chan error, 1)
+	l.onDurablePut = func(_ string, err error) { done <- err }
+
+	if err := l.Put(context.Background(), "k", bytes.NewReader([]byte("v"))); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("onDurablePut err = %v, want %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async durable put")
 	}
 }
 

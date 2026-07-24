@@ -62,17 +62,18 @@ func (l *Layered) Get(ctx context.Context, key string) (io.ReadCloser, bool, err
 
 	// Durable hit: stream it into the local layer (warming), then re-open the
 	// warmed file to hand back to the caller. This keeps memory flat — the object
-	// is never buffered whole — at the cost of one local read-back.
+	// is never buffered whole — at the cost of one local read-back. Warming is
+	// best-effort: if the local layer is degraded (full disk, bad volume), the
+	// object is re-read from the durable layer so a durable hit is still served.
 	defer func() { _ = rc.Close() }()
 	if err := l.local.Put(ctx, key, rc); err != nil {
-		// Warming is best-effort; fall back to serving the durable stream directly.
 		l.log.Warn("cache warm failed", "key", key, "err", err)
-		return nil, false, err
+		return l.durable.Get(ctx, key)
 	}
 	local, localHit, err := l.local.Get(ctx, key)
 	if err != nil || !localHit {
-		l.log.Warn("cache warm read-back failed", "key", key, "err", err)
-		return nil, false, err
+		l.log.Warn("cache warm read-back failed", "key", key, "hit", localHit, "err", err)
+		return l.durable.Get(ctx, key)
 	}
 	return local, true, nil
 }
@@ -107,7 +108,8 @@ func (l *Layered) putDurable(key string) {
 	}
 	defer func() { _ = rc.Close() }()
 
-	if err := l.durable.Put(ctx, key, rc); err != nil {
+	err = l.durable.Put(ctx, key, rc)
+	if err != nil {
 		l.log.Error("durable cache put failed", "key", key, "err", err)
 	} else {
 		l.log.Debug("durable cache put", "key", key)
