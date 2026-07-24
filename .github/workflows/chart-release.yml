@@ -1,0 +1,56 @@
+name: Chart release
+
+# Publishes the Helm chart as an OCI artifact to GHCR and signs it with
+# cosign (keyless), so users can install without cloning the repo:
+#   helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata --version <chart version>
+#
+# Runs on every release tag; workflow_dispatch republishes the chart at the
+# current default branch (e.g. after a chart-only change).
+#
+# Actions are pinned to full commit SHAs (the tag comment is informative only);
+# dependabot bumps the SHAs.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write # push the chart to GHCR
+  id-token: write # cosign keyless signing (OIDC)
+
+jobs:
+  chart:
+    name: Package, push, sign
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: helm lint
+        run: helm lint deploy/helm/terrastrata
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package chart
+        id: pkg
+        run: |
+          helm package deploy/helm/terrastrata -d dist
+          echo "file=$(ls dist/*.tgz)" >> "$GITHUB_OUTPUT"
+
+      - name: Push chart
+        id: push
+        run: |
+          out=$(helm push "${{ steps.pkg.outputs.file }}" "oci://ghcr.io/${{ github.repository_owner }}/charts" 2>&1)
+          echo "$out"
+          echo "digest=$(echo "$out" | grep -o 'sha256:[a-f0-9]*' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the chart (keyless)
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/terrastrata@${DIGEST}"

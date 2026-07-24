@@ -62,16 +62,19 @@ With raw manifests:
 kubectl apply -f deploy/k8s/manifests.yaml
 ```
 
-Or with Helm:
+Or with Helm, straight from the OCI registry (chart is cosign-signed like the image):
 
 ```bash
-helm install tf-mirror deploy/helm/terrastrata \
+helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata \
+  --version 0.3.0 \
   --namespace tf-mirror --create-namespace
 # With durable S3 cache:
 #   --set s3.enabled=true --set s3.bucket=tf-mirror \
 #   --set s3.endpoint=https://s3.de.io.cloud.ovh.net --set s3.region=de \
 #   --set s3.accessKey=... --set s3.secretKey=...
 ```
+
+(From a checkout, `helm install tf-mirror deploy/helm/terrastrata ...` works the same.)
 
 ### 2. Configure Terraform agents
 

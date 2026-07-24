@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- End-to-end CI test: the real Terraform CLI runs `terraform init` through the
+  mirror (behind a TLS proxy) and the second install must be served entirely
+  from cache.
+- The Helm chart is published to GHCR as a cosign-signed OCI artifact on each
+  release: `helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata`.
+
+### Fixed
+
+- Docs: the agent `.terraformrc` examples showed a plain-http mirror URL;
+  Terraform requires `https` for `network_mirror`, so agents must go through
+  the TLS-terminating Ingress/Gateway.
+
 ## [0.3.0] - 2026-07-24
 
 ### Fixed
