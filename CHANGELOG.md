@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Helm chart (0.3.1): optional `ServiceMonitor` (`serviceMonitor.enabled=true`)
+  for Prometheus-operator and VictoriaMetrics-operator stacks, which ignore the
+  `prometheus.io/*` pod annotations. Set `serviceMonitor.labels` if your
+  Prometheus selects monitors by label.
+
+### Added
+
 - End-to-end CI test: the real Terraform CLI runs `terraform init` through the
   mirror (behind a TLS proxy) and the second install must be served entirely
   from cache.
