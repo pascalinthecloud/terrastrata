@@ -131,6 +131,22 @@ serviceAccount:
   # e.g. eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/terrastrata
   annotations: {}
 
+# Prometheus-operator style scraping. Enable this when your stack discovers
+# targets via ServiceMonitor CRDs — kube-prometheus-stack, or the
+# VictoriaMetrics operator (which converts ServiceMonitors automatically).
+# Requires the monitoring.coreos.com/v1 ServiceMonitor CRD to be installed.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: ""
+  # Extra labels for the ServiceMonitor, e.g. when your Prometheus selects
+  # ServiceMonitors by label:
+  #   release: kube-prometheus-stack
+  labels: {}
+
+# The prometheus.io/* annotations below only work with classic annotation-based
+# Prometheus scrape configs; operator-based stacks ignore them (use
+# serviceMonitor.enabled instead).
 podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"

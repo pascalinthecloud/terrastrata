@@ -234,6 +234,12 @@ structure is mirrored under your configured S3 prefix.
 - Structured JSON access logs on stdout, one line per request, with a
   per-request `X-Request-Id`
 
+**Scraping:** with an operator-based stack (kube-prometheus-stack,
+VictoriaMetrics operator) enable the chart's ServiceMonitor —
+`--set serviceMonitor.enabled=true` (plus `serviceMonitor.labels` if your
+Prometheus selects monitors by label). The `prometheus.io/*` pod annotations
+the chart also sets only work with classic annotation-based scrape configs.
+
 A ready-to-run local stack (terrastrata + Prometheus + Grafana with a
 provisioned dashboard, plus optional MinIO and a TLS front for real `terraform`
 clients) lives in [`deploy/local/`](deploy/local/) for exercising the mirror
