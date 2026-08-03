@@ -172,7 +172,7 @@ docker push your-registry/terrastrata:latest
 Released images are published to GitHub Container Registry on every version tag:
 
 ```
-ghcr.io/pascalinthecloud/terrastrata:0.3.0     # exact version
+ghcr.io/pascalinthecloud/terrastrata:0.3.1     # exact version
 ghcr.io/pascalinthecloud/terrastrata:0.3       # major.minor
 ghcr.io/pascalinthecloud/terrastrata:sha-<sha> # by commit
 ```
@@ -185,7 +185,7 @@ with cosign** (keyless / Sigstore) — verify before deploying:
 cosign verify \
   --certificate-identity-regexp 'https://github.com/pascalinthecloud/terrastrata/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/pascalinthecloud/terrastrata:0.3.0
+  ghcr.io/pascalinthecloud/terrastrata:0.3.1
 ```
 
 Pin by digest in production. To cut a release:

@@ -7,15 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-03
+
 ### Added
 
 - Helm chart (0.3.1): optional `ServiceMonitor` (`serviceMonitor.enabled=true`)
   for Prometheus-operator and VictoriaMetrics-operator stacks, which ignore the
   `prometheus.io/*` pod annotations. Set `serviceMonitor.labels` if your
   Prometheus selects monitors by label.
-
-### Added
-
 - End-to-end CI test: the real Terraform CLI runs `terraform init` through the
   mirror (behind a TLS proxy) and the second install must be served entirely
   from cache.
@@ -114,6 +113,8 @@ Initial release.
 - CI (test, lint, govulncheck, Trivy scan) and a release pipeline publishing a
   signed (cosign keyless), multi-arch image with SBOM and provenance to GHCR.
 
-[Unreleased]: https://github.com/pascalinthecloud/terrastrata/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/pascalinthecloud/terrastrata/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/pascalinthecloud/terrastrata/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/pascalinthecloud/terrastrata/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pascalinthecloud/terrastrata/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/pascalinthecloud/terrastrata/releases/tag/v0.1.0
