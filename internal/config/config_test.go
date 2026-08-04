@@ -322,7 +322,80 @@ func clearEnv(t *testing.T) {
 		"LISTEN_ADDR", "CACHE_DIR", "UPSTREAM_BASE", "MIRROR_HOSTNAME", "AUTH_TOKEN", "LOG_LEVEL", "INDEX_TTL",
 		"S3_BUCKET", "S3_PREFIX", "S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY",
 		"PREWARM_PROVIDERS", "PREWARM_PLATFORMS", "CACHE_MAX_BYTES",
+		"MODULES_ENABLED", "MODULES_UPSTREAM_BASE",
 	} {
 		t.Setenv(k, "")
 	}
+}
+
+func TestFromEnvModules(t *testing.T) {
+	t.Run("disabled by default", func(t *testing.T) {
+		clearEnv(t)
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.Modules.Enabled {
+			t.Error("module registry should be opt-in, but defaulted to enabled")
+		}
+	})
+
+	t.Run("upstream defaults to the provider upstream", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MODULES_ENABLED", "true")
+		t.Setenv("UPSTREAM_BASE", "https://registry.corp.example/")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if !cfg.Modules.Enabled {
+			t.Error("Modules.Enabled = false, want true")
+		}
+		// Also asserts the trailing slash is trimmed, since upstream URLs are
+		// built by concatenation.
+		if want := "https://registry.corp.example"; cfg.Modules.UpstreamBase != want {
+			t.Errorf("Modules.UpstreamBase = %q, want %q", cfg.Modules.UpstreamBase, want)
+		}
+	})
+
+	t.Run("upstream overridable independently", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MODULES_ENABLED", "1")
+		t.Setenv("MODULES_UPSTREAM_BASE", "https://modules.corp.example")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.Modules.UpstreamBase != "https://modules.corp.example" {
+			t.Errorf("Modules.UpstreamBase = %q", cfg.Modules.UpstreamBase)
+		}
+		if cfg.UpstreamBase != DefaultUpstreamBase {
+			t.Errorf("provider UpstreamBase changed to %q", cfg.UpstreamBase)
+		}
+	})
+
+	t.Run("invalid boolean fails fast", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MODULES_ENABLED", "yes")
+		if _, err := FromEnv(); err == nil {
+			t.Error("expected an error for MODULES_ENABLED=yes, got nil")
+		}
+	})
+
+	t.Run("invalid upstream fails fast when enabled", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MODULES_ENABLED", "true")
+		t.Setenv("MODULES_UPSTREAM_BASE", "not-a-url")
+		if _, err := FromEnv(); err == nil {
+			t.Error("expected an error for a scheme-less MODULES_UPSTREAM_BASE, got nil")
+		}
+	})
+
+	t.Run("invalid upstream ignored when disabled", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MODULES_UPSTREAM_BASE", "not-a-url")
+		if _, err := FromEnv(); err != nil {
+			t.Errorf("unexpected error while modules are disabled: %v", err)
+		}
+	})
 }

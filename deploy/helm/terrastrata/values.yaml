@@ -36,6 +36,21 @@ config:
   # the 20Gi default PVC). Empty/"0" disables eviction (unbounded growth).
   cacheMaxBytes: "18GB"
 
+# Optional Terraform module registry (off by default).
+#
+# Unlike the provider mirror this is a *registry*, not a mirror: Terraform has no
+# module mirror protocol, so consumers must point each module's source at this
+# host (source = "tf-mirror.internal/<namespace>/<name>/<system>") and reach it
+# over https under a hostname containing a dot. Enabling it adds the
+# /.well-known/terraform.json and /v1/modules/ routes.
+#
+# Note that module archives are cached unverified: the protocol publishes no
+# checksums, unlike provider zips.
+modules:
+  enabled: false
+  # Upstream module registry. Empty means use config.upstreamBase.
+  upstreamBase: ""
+
 # Optional startup cache pre-warming.
 #   providers: list of "[host/]namespace/type[@version]"
 #   platforms: os_arch list to warm zips for (@version entries only)

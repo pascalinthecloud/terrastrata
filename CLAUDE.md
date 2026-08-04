@@ -64,7 +64,10 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**
 ├── internal/
 │   ├── config/              # Env-driven Config + validation
 │   ├── cache/               # Two-layer cache: local FS, S3, Layered composition
-│   ├── mirror/              # Protocol: paths, upstream client, translation, handler
+│   ├── mirror/              # Provider protocol: paths, upstream client, translation, handler
+│   ├── modules/             # Optional module registry protocol (opt-in, MODULES_ENABLED)
+│   ├── pathsafe/            # Traversal-proof path-component validation (shared)
+│   ├── freshness/           # Cached-document TTL envelope (shared)
 │   ├── prewarm/             # Optional startup cache seeding (in-process replay)
 │   ├── httpx/               # Middleware: request-id, logging, recovery, bearer auth
 │   └── observ/              # slog logger + Prometheus metrics
@@ -108,6 +111,8 @@ set without credentials).
 | `INDEX_TTL` | `10m` | Versions-index freshness window (Go duration); `0` disables expiry |
 | `PREWARM_PROVIDERS` | _(empty)_ | Comma-separated `[host/]ns/type[@version]` to warm at startup; empty disables |
 | `PREWARM_PLATFORMS` | `linux_amd64` | Comma-separated `os_arch` for warming zips of `@version` entries |
+| `MODULES_ENABLED` | `false` | Serve the module registry protocol (adds `/.well-known/terraform.json` + `/v1/modules/`) |
+| `MODULES_UPSTREAM_BASE` | _(value of `UPSTREAM_BASE`)_ | Upstream module registry |
 
 ### `internal/cache`
 - `Cache` interface: `Get(ctx, key) (io.ReadCloser, bool, error)` and `Put(ctx, key, io.Reader)` (streaming).
@@ -129,8 +134,39 @@ set without credentials).
   - `GET /:hostname/:namespace/:type/:version.json` — archives index
   - `GET /:hostname/:namespace/:type/:version/download/:platform/:filename` — provider zip
   - Sets `X-Cache: HIT|MISS|STALE`; verifies the registry SHA-256 before caching a zip; treats the cache as best-effort (never a hard dependency).
-  - Versions index is revalidated on `INDEX_TTL`; on upstream failure during revalidation it serves the last-known-good copy stale (`freshness.go` holds the envelope helpers).
+  - Versions index is revalidated on `INDEX_TTL`; on upstream failure during revalidation it serves the last-known-good copy stale (`internal/freshness` holds the envelope helpers).
   - Concurrent cold requests for the same coordinate are coalesced (`golang.org/x/sync/singleflight`): one request fetches from upstream and populates the cache while the rest wait and then serve it, collapsing a thundering herd (e.g. a fleet of CI agents starting at once) into a single upstream fetch. The in-flight fetch runs under a detached context so one client hanging up never aborts the work the others are waiting on.
+
+### `internal/modules`
+Optional (`MODULES_ENABLED`) module **registry** — not a mirror: Terraform has no
+module mirror protocol, so clients address terrastrata directly via
+`source = "<host>/<ns>/<name>/<system>"` and discover it through
+`/.well-known/terraform.json` (which advertises only `modules.v1`; terrastrata is
+a provider *mirror*, not a provider registry).
+
+- `versions` and `<version>/download` are served from cache with the same
+  TTL/serve-stale and singleflight machinery as the provider path.
+- The one translation is `X-Terraform-Get`: upstream's value is rewritten to a
+  **host-relative** terrastrata archive URL (Terraform resolves it against the
+  download endpoint, so no external hostname needs configuring).
+- **The live registry returns `git::https://github.com/OWNER/REPO?ref=<sha>` for
+  every module**, not the https tarball the protocol docs show. Those are mapped
+  onto `codeload.github.com/OWNER/REPO/tar.gz/<sha>` so no git client is needed,
+  and the tarball's single wrapper directory is stripped on the way through
+  (`repack.go`) because **Terraform does not expand the go-getter `//*` subdir
+  glob for registry modules** — it records the literal `*` path and fails.
+- Anything else (non-GitHub `git::`, `ssh://`, `s3::`, unknown archive type) is
+  passed through verbatim with `X-Cache: BYPASS` rather than failing the request.
+- **No checksums exist** in this protocol, so archives get only an https-only
+  fetch and a 512 MiB cap — weaker than the provider path's SHA-256 verification.
+
+Routing constraint: the module and provider route patterns overlap with neither
+more specific (`/v1/modules/{ns}/{name}/{sys}/{v}/download` vs
+`/{hostname}/{ns}/{type}/{v}/download/{platform}/{filename}`), so registering both
+on one `ServeMux` **panics at startup**. Providers stay on `mirrorMux`; modules are
+registered on the root mux. The archive endpoint is mounted outside bearer auth
+because Terraform sends credentials only to registry endpoints, never to the
+`X-Terraform-Get` fetch.
 
 ### `internal/prewarm`
 Optional startup cache seeding. Replays mirror requests (`[host/]ns/type[@version]`)
@@ -143,7 +179,8 @@ Cross-cutting HTTP middleware (request-id, structured access logging, panic
 recovery, optional constant-time bearer auth) and observability (JSON `slog`
 logger + private Prometheus registry on `/metrics`). Metrics: `cache_lookups_total`,
 `http_requests_total`, `http_request_duration_seconds`, `versions_index_total`
-(freshness outcome: fresh/revalidated/coalesced/stale/error), `prewarm_total`,
+(freshness outcome: fresh/revalidated/coalesced/stale/error), `module_downloads_total`
+(cached/bypass/error), `prewarm_total`,
 `cache_size_bytes` + `cache_evictions_total`, plus Go/process
 collectors. `/health` and `/metrics` are
 unauthenticated; mirror routes sit behind optional auth.
@@ -207,6 +244,17 @@ protocol: `index.json` → `/v1/providers/:ns/:type/versions`, and each archive 
                         └── terraform-provider-azurerm_3.110.0_linux_amd64.zip
 ```
 
+Modules, when enabled, live under a separate `_modules/` root that no provider
+hostname can collide with:
+
+```
+/cache/_modules/claranet/regions/azurerm/
+├── versions.json          # version list (freshness envelope)
+└── 8.0.6/
+    ├── location.json      # resolved upstream source + subdir + archive type
+    └── archive            # the module tarball (wrapper dir already stripped)
+```
+
 Same structure is mirrored under the configured S3 prefix.
 
 Note: the versions `index.json` is stored as an internal freshness envelope
@@ -244,14 +292,17 @@ Service directly.
 
 ## Known limitations / open TODOs
 
-- Only provider mirror protocol supported — no module registry protocol
+- Module support is a *registry*, not a mirror: consumers must rewrite each
+  module's `source` to point at terrastrata (no transparent interception)
+- Module archives are cached unverified — the protocol publishes no checksums
+- Only GitHub-hosted `git::` module sources can be cached; others pass through
 - Multi-replica HA requires S3-backed mode (or a RWX PVC); the default RWO PVC is single-replica
 
 ---
 
 ## Roadmap
 
-- [ ] Support for module registry protocol
+- [x] Support for module registry protocol (`MODULES_ENABLED`)
 - [x] Pre-warm mode: seed cache from a provider list on startup
 - [x] Cache TTL / revalidation for index.json (with serve-stale-on-outage)
 - [x] Prometheus metrics endpoint

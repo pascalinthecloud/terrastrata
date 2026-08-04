@@ -23,7 +23,8 @@ var httpDurationBuckets = []float64{
 }
 
 // Metrics holds terrastrata's Prometheus collectors and the registry they belong
-// to. It satisfies mirror.Metrics via CacheLookup.
+// to. It satisfies mirror.Metrics, modules.Metrics, prewarm.Metrics and
+// cache.EvictorMetrics.
 type Metrics struct {
 	registry *prometheus.Registry
 
@@ -31,6 +32,7 @@ type Metrics struct {
 	httpRequests  *prometheus.CounterVec
 	httpDuration  *prometheus.HistogramVec
 	versionsIndex *prometheus.CounterVec
+	moduleDowns   *prometheus.CounterVec
 	prewarm       *prometheus.CounterVec
 	cacheSize     prometheus.Gauge
 	evictions     prometheus.Counter
@@ -60,6 +62,10 @@ func NewMetrics() *Metrics {
 			Name: "terrastrata_versions_index_total",
 			Help: "Versions-index requests by freshness outcome (fresh, revalidated, coalesced, stale, error).",
 		}, []string{"outcome"}),
+		moduleDowns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "terrastrata_module_downloads_total",
+			Help: "Module download resolutions by outcome (cached, bypass, error).",
+		}, []string{"outcome"}),
 		prewarm: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "terrastrata_prewarm_total",
 			Help: "Startup pre-warm operations by resource and result.",
@@ -78,7 +84,8 @@ func NewMetrics() *Metrics {
 		}),
 	}
 	reg.MustRegister(
-		m.cacheLookups, m.httpRequests, m.httpDuration, m.versionsIndex, m.prewarm,
+		m.cacheLookups, m.httpRequests, m.httpDuration, m.versionsIndex,
+		m.moduleDowns, m.prewarm,
 		m.cacheSize, m.evictions, m.evictedBytes,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -98,6 +105,11 @@ func (m *Metrics) CacheLookup(resource string, hit bool) {
 // VersionsIndexOutcome implements mirror.Metrics.
 func (m *Metrics) VersionsIndexOutcome(outcome string) {
 	m.versionsIndex.WithLabelValues(outcome).Inc()
+}
+
+// ModuleDownload implements modules.Metrics.
+func (m *Metrics) ModuleDownload(outcome string) {
+	m.moduleDowns.WithLabelValues(outcome).Inc()
 }
 
 // PrewarmResult implements prewarm.Metrics.
