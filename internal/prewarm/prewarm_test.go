@@ -106,8 +106,7 @@ func newTestMux(t *testing.T, upstreamURL, cacheDir string) http.Handler {
 	}
 	h, err := mirror.NewHandler(mirror.Options{
 		Cache:      c,
-		Upstream:   mirror.NewUpstream(upstreamURL, "prewarm-test", 5*time.Second),
-		Hostname:   "registry.terraform.io",
+		Upstreams:  mirror.SingleUpstream("registry.terraform.io", mirror.NewUpstream(upstreamURL, "prewarm-test", 5*time.Second)),
 		StagingDir: t.TempDir(),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})

@@ -36,12 +36,14 @@ type Metrics interface {
 	// CacheLookup records whether a lookup for the given resource kind
 	// ("versions", "archives", "zip") hit the cache.
 	CacheLookup(resource string, hit bool)
-	// VersionsIndexOutcome records how a versions-index request was satisfied:
-	// "fresh" (served within TTL), "revalidated" (refetched from upstream),
-	// "coalesced" (waited on a concurrent request's refetch), "stale" (served
-	// last-known-good after an upstream failure), or "error" (upstream failed
-	// with no cached copy to fall back on).
-	VersionsIndexOutcome(outcome string)
+	// VersionsIndexOutcome records how a versions-index request for the given
+	// upstream hostname was satisfied: "fresh" (served within TTL),
+	// "revalidated" (refetched from upstream), "coalesced" (waited on a
+	// concurrent request's refetch), "stale" (served last-known-good after an
+	// upstream failure), or "error" (upstream failed with no cached copy to fall
+	// back on). The hostname distinguishes which registry is degraded when
+	// several are mirrored.
+	VersionsIndexOutcome(upstream, outcome string)
 }
 
 // Versions-index outcome labels.
@@ -60,22 +62,22 @@ type NopMetrics struct{}
 func (NopMetrics) CacheLookup(string, bool) {}
 
 // VersionsIndexOutcome implements Metrics and does nothing.
-func (NopMetrics) VersionsIndexOutcome(string) {}
+func (NopMetrics) VersionsIndexOutcome(string, string) {}
 
 // Handler serves the Terraform provider network mirror protocol, backed by a
 // pull-through cache over an upstream provider registry.
 type Handler struct {
-	cache    Cache
-	upstream *Upstream
-	metrics  Metrics
-	log      *slog.Logger
+	cache   Cache
+	metrics Metrics
+	log     *slog.Logger
 
-	// hostname is the registry hostname this mirror serves providers for.
-	// Requests addressing any other hostname are 404s: the network mirror
-	// protocol namespaces providers by hostname, and silently proxying every
-	// hostname to the one configured upstream would cache upstream content
-	// under foreign cache keys (aliasing).
-	hostname string
+	// upstreams maps each registry hostname this mirror serves to its upstream
+	// client, keyed by lowercased hostname. Requests addressing a hostname that
+	// is not present are 404s: the network mirror protocol namespaces providers
+	// by hostname, and silently proxying an unknown hostname to some other
+	// upstream would cache that upstream's content under foreign cache keys
+	// (aliasing).
+	upstreams map[string]*Upstream
 
 	// stagingDir is a writable directory for staging provider zips while their
 	// checksum is verified. It must be on a writable volume (the container root
@@ -101,16 +103,15 @@ type Cache interface {
 	Put(ctx context.Context, key string, r io.Reader) error
 }
 
-// Options configures a Handler. Cache, Upstream, Hostname and Logger are
-// required.
+// Options configures a Handler. Cache, Upstreams and Logger are required.
 type Options struct {
-	Cache    Cache
-	Upstream *Upstream
-	Metrics  Metrics // defaults to NopMetrics{} when nil
-	// Hostname is the registry hostname this mirror serves providers for (the
-	// {hostname} segment clients request). Requests for other hostnames are
-	// rejected with a 404. Compared case-insensitively.
-	Hostname string
+	Cache   Cache
+	Metrics Metrics // defaults to NopMetrics{} when nil
+	// Upstreams maps each registry hostname this mirror serves (the {hostname}
+	// segment clients request) to its upstream client. Hostnames are matched
+	// case-insensitively; requests for a hostname not present are rejected with
+	// a 404. Use SingleUpstream for the common one-registry case.
+	Upstreams map[string]*Upstream
 	// StagingDir is a writable directory for verifying zips; created if absent.
 	StagingDir string
 	// IndexTTL is the versions-index freshness window; zero disables expiry.
@@ -124,22 +125,37 @@ func NewHandler(opts Options) (*Handler, error) {
 	if opts.Metrics == nil {
 		opts.Metrics = NopMetrics{}
 	}
-	if opts.Hostname == "" {
-		return nil, errors.New("mirror: Options.Hostname is required")
+	if len(opts.Upstreams) == 0 {
+		return nil, errors.New("mirror: Options.Upstreams must have at least one entry")
+	}
+	// Normalize once so lookups can be a plain map hit rather than a scan.
+	upstreams := make(map[string]*Upstream, len(opts.Upstreams))
+	for hostname, u := range opts.Upstreams {
+		if hostname == "" {
+			return nil, errors.New("mirror: Options.Upstreams has an empty hostname")
+		}
+		if u == nil {
+			return nil, fmt.Errorf("mirror: Options.Upstreams[%q] is nil", hostname)
+		}
+		upstreams[strings.ToLower(hostname)] = u
 	}
 	if err := os.MkdirAll(opts.StagingDir, 0o750); err != nil {
 		return nil, fmt.Errorf("mirror: create staging dir: %w", err)
 	}
 	return &Handler{
 		cache:      opts.Cache,
-		upstream:   opts.Upstream,
+		upstreams:  upstreams,
 		metrics:    opts.Metrics,
-		hostname:   opts.Hostname,
 		stagingDir: opts.StagingDir,
 		indexTTL:   opts.IndexTTL,
 		now:        time.Now,
 		log:        opts.Logger,
 	}, nil
+}
+
+// SingleUpstream builds the Upstreams map for a mirror serving one registry.
+func SingleUpstream(hostname string, u *Upstream) map[string]*Upstream {
+	return map[string]*Upstream{hostname: u}
 }
 
 // provider validates the request's hostname/namespace/type triple and enforces
@@ -149,10 +165,17 @@ func (h *Handler) provider(r *http.Request) (Coordinates, error) {
 	if err != nil {
 		return Coordinates{}, err
 	}
-	if !strings.EqualFold(c.Hostname, h.hostname) {
+	if _, ok := h.upstreams[strings.ToLower(c.Hostname)]; !ok {
 		return Coordinates{}, fmt.Errorf("%w: hostname %q is not served by this mirror", ErrNotFound, c.Hostname)
 	}
 	return c, nil
+}
+
+// upstreamFor returns the upstream client for c's hostname. Every path that
+// reaches it has already gone through provider(), which rejects an unserved
+// hostname, so a miss here would be a programming error rather than bad input.
+func (h *Handler) upstreamFor(c Coordinates) *Upstream {
+	return h.upstreams[strings.ToLower(c.Hostname)]
 }
 
 // failProvider maps a provider-coordinate error to a client response: a
@@ -191,7 +214,7 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 	cachedBody, fetchedAt, cacheHit := h.loadVersions(r.Context(), key)
 	if cacheHit && h.versionsFresh(fetchedAt) {
 		h.metrics.CacheLookup("versions", true)
-		h.metrics.VersionsIndexOutcome(outcomeFresh)
+		h.metrics.VersionsIndexOutcome(c.Hostname, outcomeFresh)
 		writeBody(w, "application/json", "HIT", cachedBody)
 		return
 	}
@@ -216,13 +239,13 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 		// definitive 404 (provider removed) is passed through instead.
 		if !errors.Is(err, ErrNotFound) && cacheHit && len(cachedBody) > 0 {
 			h.metrics.CacheLookup("versions", true)
-			h.metrics.VersionsIndexOutcome(outcomeStale)
+			h.metrics.VersionsIndexOutcome(c.Hostname, outcomeStale)
 			h.log.Warn("serving stale versions index after upstream failure", "key", key, "err", err)
 			writeBody(w, "application/json", "STALE", cachedBody)
 			return
 		}
 		h.metrics.CacheLookup("versions", false)
-		h.metrics.VersionsIndexOutcome(outcomeError)
+		h.metrics.VersionsIndexOutcome(c.Hostname, outcomeError)
 		h.failUpstream(w, r, err)
 		return
 	}
@@ -232,9 +255,9 @@ func (h *Handler) handleVersions(w http.ResponseWriter, r *http.Request) {
 	// that shared its result count as "coalesced", so the revalidated series
 	// tracks real upstream fetches instead of inflating under a herd.
 	if led {
-		h.metrics.VersionsIndexOutcome(outcomeRevalidated)
+		h.metrics.VersionsIndexOutcome(c.Hostname, outcomeRevalidated)
 	} else {
-		h.metrics.VersionsIndexOutcome(outcomeCoalesced)
+		h.metrics.VersionsIndexOutcome(c.Hostname, outcomeCoalesced)
 	}
 	writeBody(w, "application/json", "MISS", v.([]byte))
 }
@@ -271,7 +294,7 @@ func (h *Handler) loadVersions(ctx context.Context, key string) (body []byte, fe
 
 // fetchVersions retrieves and builds the mirror versions index from upstream.
 func (h *Handler) fetchVersions(ctx context.Context, c Coordinates) ([]byte, error) {
-	versions, err := h.upstream.ListVersions(ctx, c)
+	versions, err := h.upstreamFor(c).ListVersions(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +352,7 @@ func (h *Handler) handleArchives(w http.ResponseWriter, r *http.Request) {
 // caches it, returning the marshalled body. Used inside the coalescing group so
 // concurrent cold requests share a single upstream assembly.
 func (h *Handler) buildArchives(ctx context.Context, c Coordinates, version, key string) ([]byte, error) {
-	versions, err := h.upstream.ListVersions(ctx, c)
+	versions, err := h.upstreamFor(c).ListVersions(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +360,7 @@ func (h *Handler) buildArchives(ctx context.Context, c Coordinates, version, key
 	if err != nil {
 		return nil, err
 	}
-	idx, err := BuildArchivesIndex(ctx, h.upstream, c, platforms)
+	idx, err := BuildArchivesIndex(ctx, h.upstreamFor(c), c, platforms)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +425,7 @@ func (h *Handler) handleZip(w http.ResponseWriter, r *http.Request) {
 // not-found so failUpstream maps it to 404.
 func (h *Handler) fetchStageZip(ctx context.Context, c Coordinates) (*os.File, int64, error) {
 	osName, arch, _ := strings.Cut(c.Platform, "_")
-	meta, err := h.upstream.GetDownload(ctx, c, osName, arch)
+	meta, err := h.upstreamFor(c).GetDownload(ctx, c, osName, arch)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -418,7 +441,7 @@ func (h *Handler) fetchStageZip(ctx context.Context, c Coordinates) (*os.File, i
 		return nil, 0, fmt.Errorf("mirror: upstream checksum %q is not a SHA-256 hex digest", meta.Shasum)
 	}
 
-	rc, err := h.upstream.FetchZip(ctx, meta.DownloadURL)
+	rc, err := h.upstreamFor(c).FetchZip(ctx, meta.DownloadURL)
 	if err != nil {
 		return nil, 0, err
 	}

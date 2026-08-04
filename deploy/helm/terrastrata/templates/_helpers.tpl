@@ -53,3 +53,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "terrastrata.s3SecretName" -}}
 {{- if .Values.s3.existingSecret -}}{{ .Values.s3.existingSecret }}{{- else -}}{{ include "terrastrata.fullname" . }}-s3{{- end -}}
 {{- end -}}
+
+{{/*
+Render config.upstreams as the comma-separated UPSTREAM_BASE value. An entry with
+a hostname is emitted as "hostname=url"; otherwise the URL alone, letting
+terrastrata derive the served hostname from the URL's host.
+*/}}
+{{- define "terrastrata.upstreams" -}}
+{{- $parts := list -}}
+{{- range .Values.config.upstreams -}}
+  {{- if not .url -}}
+    {{- fail "config.upstreams: every entry needs a url" -}}
+  {{- end -}}
+  {{- if .hostname -}}
+    {{- $parts = append $parts (printf "%s=%s" .hostname .url) -}}
+  {{- else -}}
+    {{- $parts = append $parts .url -}}
+  {{- end -}}
+{{- end -}}
+{{- join "," $parts -}}
+{{- end -}}

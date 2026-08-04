@@ -98,8 +98,8 @@ set without credentials).
 | `LISTEN_ADDR` | `:8080` | Listen address |
 | `CACHE_DIR` | `/cache` | Local filesystem cache root |
 | `CACHE_MAX_BYTES` | _(empty)_ | Local cache size budget (`20GB`/`512Mi`/bytes); LRU eviction over it. Empty/`0` = unbounded |
-| `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry |
-| `MIRROR_HOSTNAME` | _(host of `UPSTREAM_BASE`)_ | Hostname the mirror serves (the `{hostname}` path segment); other hostnames 404 |
+| `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry. Comma-separated list for multi-upstream; each entry a URL or `hostname=url` |
+| `MIRROR_HOSTNAME` | _(host of the first `UPSTREAM_BASE` entry)_ | Hostname the mirror serves (the `{hostname}` path segment); other hostnames 404. Overrides the **first** entry only |
 | `S3_BUCKET` | _(empty)_ | S3 bucket — leave empty to disable S3 |
 | `S3_PREFIX` | `tf-mirror` | S3 key prefix |
 | `S3_ENDPOINT` | _(empty)_ | Custom S3 endpoint (OVH, MinIO, etc.) |
@@ -129,7 +129,12 @@ set without credentials).
 - `paths.go` — strict validation of every request coordinate (traversal-proof); the cache's first line of defense. The handler additionally rejects (404) any `{hostname}` that is not the configured mirror hostname, so foreign hostnames can never alias upstream content under a different cache key.
 - `upstream.go` — registry-protocol client (`/v1/providers/...`) with transport-level timeouts and bounded response bodies. Download URLs must be https unless `UPSTREAM_BASE` itself is http (dev/MinIO).
 - `protocol.go` — translation from registry responses to mirror responses, concurrent (bounded) archives assembly, cache-key helpers.
-- `handler.go` — `http.Handler` over a `ServeMux`. Routes:
+- `handler.go` — `http.Handler` over a `ServeMux`. Holds `upstreams map[string]*Upstream`
+  keyed by lowercased hostname, so one instance mirrors several registries over a
+  shared cache; `provider()` rejects (404) any hostname absent from the map, and
+  `upstreamFor(c)` resolves the client from the already-validated coordinates.
+  Because every cache key starts with the hostname, two registries publishing the
+  same `namespace/type` cannot alias each other. Routes:
   - `GET /:hostname/:namespace/:type/index.json` — versions index
   - `GET /:hostname/:namespace/:type/:version.json` — archives index
   - `GET /:hostname/:namespace/:type/:version/download/:platform/:filename` — provider zip
@@ -179,7 +184,7 @@ Cross-cutting HTTP middleware (request-id, structured access logging, panic
 recovery, optional constant-time bearer auth) and observability (JSON `slog`
 logger + private Prometheus registry on `/metrics`). Metrics: `cache_lookups_total`,
 `http_requests_total`, `http_request_duration_seconds`, `versions_index_total`
-(freshness outcome: fresh/revalidated/coalesced/stale/error), `module_downloads_total`
+(labelled by upstream hostname + freshness outcome: fresh/revalidated/coalesced/stale/error), `module_downloads_total`
 (cached/bypass/error), `prewarm_total`,
 `cache_size_bytes` + `cache_evictions_total`, plus Go/process
 collectors. `/health` and `/metrics` are
@@ -297,6 +302,8 @@ Service directly.
 - Module archives are cached unverified — the protocol publishes no checksums
 - Only GitHub-hosted `git::` module sources can be cached; others pass through
 - Multi-replica HA requires S3-backed mode (or a RWX PVC); the default RWO PVC is single-replica
+- The module registry is single-upstream: module requests carry no hostname segment,
+  so there is no dimension to multiplex on the way providers do
 
 ---
 
@@ -309,6 +316,7 @@ Service directly.
 - [x] Helm chart
 - [x] Request coalescing (singleflight) for concurrent cold requests
 - [x] Multi-replica HA (S3-backed, with PDB + anti-affinity)
+- [x] Multi-upstream mirroring (several registries, one cache)
 
 ---
 

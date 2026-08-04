@@ -47,7 +47,11 @@ spec:
             - name: CACHE_DIR
               value: "/cache"
             - name: UPSTREAM_BASE
+              {{- if .Values.config.upstreams }}
+              value: {{ include "terrastrata.upstreams" . | quote }}
+              {{- else }}
               value: {{ .Values.config.upstreamBase | quote }}
+              {{- end }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: INDEX_TTL

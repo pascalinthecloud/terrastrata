@@ -95,6 +95,12 @@ spec:
             # Bound the cache below the PVC size so the volume never fills (LRU eviction).
             - name: CACHE_MAX_BYTES
               value: "18GB"
+            # --- Optional: mirror several registries from this one deployment ---
+            # Each entry is a URL (the served hostname is the URL's host), or
+            # "hostname=url" when the two differ. Cache keys are namespaced by
+            # hostname, so the registries never alias each other.
+            # - name: UPSTREAM_BASE
+            #   value: "https://registry.terraform.io,https://registry.opentofu.org"
             # --- Optional module registry ---
             # A registry, not a mirror: consumers must point each module's
             # source at this host (source = "<host>/<ns>/<name>/<system>").

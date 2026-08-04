@@ -67,6 +67,21 @@ func newFakeRegistry(t *testing.T) *httptest.Server {
 	return server
 }
 
+// testUpstreams mirrors main's map construction. Tests that build a bare
+// config.Config (no Upstreams) get the single default registry, which is what
+// they meant before multi-upstream existed.
+func testUpstreams(cfg config.Config) map[string]*mirror.Upstream {
+	ups := cfg.Upstreams
+	if len(ups) == 0 {
+		ups = []config.UpstreamConfig{{Hostname: "registry.terraform.io", Base: cfg.UpstreamBase}}
+	}
+	out := make(map[string]*mirror.Upstream, len(ups))
+	for _, up := range ups {
+		out[up.Hostname] = mirror.NewUpstream(up.Base, "terrastrata-test", 5*time.Second)
+	}
+	return out
+}
+
 // newTestServer wires the full production handler tree (buildServer) over a
 // fake registry and returns the running test server plus its metrics.
 func newTestServer(t *testing.T, cfg config.Config, blobCache mirror.Cache) (*httptest.Server, *observ.Metrics) {
@@ -82,9 +97,8 @@ func newTestServer(t *testing.T, cfg config.Config, blobCache mirror.Cache) (*ht
 	}
 	handler, err := mirror.NewHandler(mirror.Options{
 		Cache:      blobCache,
-		Upstream:   mirror.NewUpstream(cfg.UpstreamBase, "terrastrata-test", 5*time.Second),
+		Upstreams:  testUpstreams(cfg),
 		Metrics:    metrics,
-		Hostname:   "registry.terraform.io",
 		StagingDir: t.TempDir(),
 		Logger:     logger,
 	})
@@ -300,5 +314,39 @@ func TestModuleDownloadRewritesHeaderThroughFullStack(t *testing.T) {
 	fetch := "/v1/modules/ns/vpc/aws/1.0.0/archive?archive=tar.gz"
 	if r := get(t, ts.URL+fetch); r.status != http.StatusOK {
 		t.Errorf("following X-Terraform-Get = %d, want 200", r.status)
+	}
+}
+
+// Two registries served by one process, sharing one cache. Guards the wiring in
+// run()/buildServer, not just the handler.
+func TestServesMultipleUpstreams(t *testing.T) {
+	tf, tofu := newFakeRegistry(t), newFakeRegistry(t)
+	cfg := config.Config{
+		UpstreamBase: tf.URL,
+		Upstreams: []config.UpstreamConfig{
+			{Hostname: "registry.terraform.io", Base: tf.URL},
+			{Hostname: "registry.opentofu.org", Base: tofu.URL},
+		},
+	}
+	ts, _ := newTestServer(t, cfg, nil)
+
+	for _, host := range []string{"registry.terraform.io", "registry.opentofu.org"} {
+		if r := get(t, ts.URL+"/"+host+"/hashicorp/null/index.json"); r.status != http.StatusOK {
+			t.Errorf("%s index.json = %d, want 200", host, r.status)
+		}
+	}
+	// A hostname that is not configured must still 404.
+	if r := get(t, ts.URL+"/registry.example.com/hashicorp/null/index.json"); r.status != http.StatusNotFound {
+		t.Errorf("unconfigured hostname = %d, want 404", r.status)
+	}
+
+	// The versions-index metric must attribute outcomes to each registry, which
+	// is what makes "which upstream is degraded" answerable.
+	metrics := get(t, ts.URL+"/metrics")
+	for _, host := range []string{"registry.terraform.io", "registry.opentofu.org"} {
+		want := `upstream="` + host + `"`
+		if !strings.Contains(metrics.body, want) {
+			t.Errorf("/metrics missing %s in terrastrata_versions_index_total", want)
+		}
 	}
 }

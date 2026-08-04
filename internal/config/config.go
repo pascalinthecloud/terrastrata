@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pascalinthecloud/terrastrata/internal/pathsafe"
 )
 
 // Default values for optional settings. Exposed as constants so tests and docs
@@ -44,15 +46,19 @@ const (
 // Config is the fully validated runtime configuration. Treat it as immutable
 // once returned by FromEnv.
 type Config struct {
-	ListenAddr   string
-	CacheDir     string
-	UpstreamBase string
+	ListenAddr string
+	CacheDir   string
 
-	// MirrorHostname is the registry hostname clients address providers by (the
-	// {hostname} path segment); requests for any other hostname are rejected.
-	// Defaults to the host of UpstreamBase. Override with MIRROR_HOSTNAME when
-	// clients request a different name than the upstream URL (for example, an
-	// internal proxy of registry.terraform.io reached under another address).
+	// Upstreams are the registries this mirror serves, in configured order.
+	// Each is addressed by its own {hostname} path segment; a request for any
+	// hostname not listed here is rejected. Always holds at least one entry.
+	Upstreams []UpstreamConfig
+
+	// UpstreamBase and MirrorHostname describe the *primary* (first) upstream.
+	// They remain as convenience fields because several call sites only need a
+	// sensible default: the module registry's upstream and prewarm's default
+	// hostname for entries that omit one.
+	UpstreamBase   string
 	MirrorHostname string
 
 	// AuthToken, when non-empty, enables bearer-token authentication on the
@@ -82,6 +88,16 @@ type Config struct {
 	Modules ModulesConfig
 
 	S3 S3Config
+}
+
+// UpstreamConfig is one registry the mirror serves.
+type UpstreamConfig struct {
+	// Hostname is the {hostname} path segment clients address this registry by.
+	// It defaults to the host of Base, and is set explicitly when the two differ
+	// (for example a private registry reached at a path on a shared host).
+	Hostname string
+	// Base is the upstream registry base URL, without a trailing slash.
+	Base string
 }
 
 // ModulesConfig holds the optional module registry settings. Module support is
@@ -115,8 +131,6 @@ func FromEnv() (Config, error) {
 	cfg := Config{
 		ListenAddr:      envOr("LISTEN_ADDR", DefaultListenAddr),
 		CacheDir:        envOr("CACHE_DIR", DefaultCacheDir),
-		UpstreamBase:    strings.TrimRight(envOr("UPSTREAM_BASE", DefaultUpstreamBase), "/"),
-		MirrorHostname:  os.Getenv("MIRROR_HOSTNAME"),
 		AuthToken:       os.Getenv("AUTH_TOKEN"),
 		UpstreamTimeout: DefaultUpstreamTimeout,
 		S3: S3Config{
@@ -128,6 +142,14 @@ func FromEnv() (Config, error) {
 			SecretKey: os.Getenv("S3_SECRET_KEY"),
 		},
 	}
+
+	upstreams, err := parseUpstreams(os.Getenv("UPSTREAM_BASE"), os.Getenv("MIRROR_HOSTNAME"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Upstreams = upstreams
+	cfg.UpstreamBase = upstreams[0].Base
+	cfg.MirrorHostname = upstreams[0].Hostname
 
 	level, err := parseLogLevel(envOr("LOG_LEVEL", DefaultLogLevel))
 	if err != nil {
@@ -165,13 +187,67 @@ func FromEnv() (Config, error) {
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
-	// Default the served hostname to the upstream's host; validate() guarantees
-	// UpstreamBase parses.
-	if cfg.MirrorHostname == "" {
-		u, _ := url.Parse(cfg.UpstreamBase)
-		cfg.MirrorHostname = u.Host
-	}
 	return cfg, nil
+}
+
+// parseUpstreams parses UPSTREAM_BASE, a comma-separated list of registries this
+// mirror serves. Each entry is either a bare URL — whose host becomes the
+// {hostname} clients address it by — or an explicit "hostname=url" pair for when
+// the two differ (a private registry living at a path, say). An empty value
+// yields the default public registry, so the single-upstream configuration this
+// grew out of keeps behaving exactly as before.
+//
+// mirrorHostname is the legacy MIRROR_HOSTNAME knob; it overrides the *first*
+// entry's hostname, which is what it always meant when only one existed.
+func parseUpstreams(raw, mirrorHostname string) ([]UpstreamConfig, error) {
+	entries := splitList(raw)
+	if len(entries) == 0 {
+		entries = []string{DefaultUpstreamBase}
+	}
+
+	out := make([]UpstreamConfig, 0, len(entries))
+	for _, entry := range entries {
+		hostname, rawURL := "", entry
+		// Split on a leading "hostname=" only. Testing for "://" before the "="
+		// keeps a URL that merely contains one (in a query string) intact.
+		if i := strings.Index(entry, "="); i > -1 && !strings.Contains(entry[:i], "://") {
+			hostname = strings.TrimSpace(entry[:i])
+			rawURL = strings.TrimSpace(entry[i+1:])
+		}
+
+		base := strings.TrimRight(rawURL, "/")
+		u, err := url.Parse(base)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("config: UPSTREAM_BASE entry %q is not a valid absolute URL", entry)
+		}
+		if u.Scheme != "https" && u.Scheme != "http" {
+			return nil, fmt.Errorf("config: UPSTREAM_BASE entry %q: scheme %q must be http or https", entry, u.Scheme)
+		}
+		if hostname == "" {
+			hostname = u.Host
+		}
+		out = append(out, UpstreamConfig{Hostname: hostname, Base: base})
+	}
+
+	if mirrorHostname != "" {
+		out[0].Hostname = mirrorHostname
+	}
+
+	// Validate hostnames after the override, so MIRROR_HOSTNAME cannot smuggle
+	// in a name the router could never match or one that collides with another
+	// upstream.
+	seen := make(map[string]string, len(out))
+	for _, up := range out {
+		if err := pathsafe.Hostname("MIRROR_HOSTNAME/UPSTREAM_BASE hostname", up.Hostname); err != nil {
+			return nil, fmt.Errorf("config: %w", err)
+		}
+		key := strings.ToLower(up.Hostname)
+		if prev, dup := seen[key]; dup {
+			return nil, fmt.Errorf("config: hostname %q is configured for two upstreams (%s and %s)", up.Hostname, prev, up.Base)
+		}
+		seen[key] = up.Base
+	}
+	return out, nil
 }
 
 // parseIndexTTL parses the INDEX_TTL duration. An empty value selects the
@@ -195,12 +271,9 @@ func (c Config) validate() error {
 		return errors.New("config: CACHE_DIR must not be empty")
 	}
 
-	u, err := url.Parse(c.UpstreamBase)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("config: UPSTREAM_BASE %q is not a valid absolute URL", c.UpstreamBase)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("config: UPSTREAM_BASE scheme %q must be http or https", u.Scheme)
+	// Upstreams are parsed and validated by parseUpstreams before validate runs.
+	if len(c.Upstreams) == 0 {
+		return errors.New("config: at least one UPSTREAM_BASE entry is required")
 	}
 
 	if c.Modules.Enabled {

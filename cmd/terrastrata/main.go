@@ -81,12 +81,16 @@ func run() error {
 	blobCache := cache.NewLayered(local, durable, logger)
 
 	metrics := observ.NewMetrics()
-	upstream := mirror.NewUpstream(cfg.UpstreamBase, "terrastrata/"+version, cfg.UpstreamTimeout)
+	// One upstream client per mirrored registry. They share the cache, which is
+	// safe because every cache key is namespaced by hostname.
+	upstreams := make(map[string]*mirror.Upstream, len(cfg.Upstreams))
+	for _, up := range cfg.Upstreams {
+		upstreams[up.Hostname] = mirror.NewUpstream(up.Base, "terrastrata/"+version, cfg.UpstreamTimeout)
+	}
 	handler, err := mirror.NewHandler(mirror.Options{
-		Cache:    blobCache,
-		Upstream: upstream,
-		Metrics:  metrics,
-		Hostname: cfg.MirrorHostname,
+		Cache:     blobCache,
+		Upstreams: upstreams,
+		Metrics:   metrics,
 		// Stage zips under the cache dir: the container root filesystem is
 		// read-only, so this is the writable volume available for verification.
 		StagingDir: filepath.Join(cfg.CacheDir, ".staging"),
@@ -117,11 +121,17 @@ func run() error {
 
 	srv := buildServer(cfg, handler, modHandler, metrics, logger)
 
+	// Log every mirrored registry: with several configured, "which hostname maps
+	// where" is the first thing to check when a client gets an unexpected 404.
+	served := make([]string, 0, len(cfg.Upstreams))
+	for _, up := range cfg.Upstreams {
+		served = append(served, up.Hostname+" -> "+up.Base)
+	}
+
 	logger.Info("starting terrastrata",
 		"version", version,
 		"addr", cfg.ListenAddr,
-		"upstream", cfg.UpstreamBase,
-		"hostname", cfg.MirrorHostname,
+		"upstreams", served,
 		"cache_dir", cfg.CacheDir,
 		"s3", cfg.S3.Enabled(),
 		"auth", cfg.AuthToken != "",

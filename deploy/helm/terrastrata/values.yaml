@@ -28,6 +28,16 @@ replicaCount: 1
 config:
   listenAddr: ":8080"
   upstreamBase: "https://registry.terraform.io"
+  # Mirror several registries from one deployment and one cache. When set, this
+  # replaces upstreamBase. Each entry needs a url; give it a hostname only when
+  # the {hostname} clients address differs from the upstream URL's host.
+  #
+  #   upstreams:
+  #     - url: https://registry.terraform.io
+  #     - url: https://registry.opentofu.org
+  #     - hostname: registry.corp.example
+  #       url: https://nexus.corp/repo/tf
+  upstreams: []
   logLevel: "info"
   # Versions-index freshness window (Go duration); "0" disables expiry.
   indexTTL: "10m"

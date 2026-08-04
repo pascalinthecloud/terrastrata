@@ -38,6 +38,7 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. Whe
 ## Features
 
 - Implements the Terraform Network Mirror Protocol — drop-in replacement, no Terraform changes needed
+- Mirrors [several registries](#multiple-registries) at once (Terraform, OpenTofu, private) from one deployment and one cache
 - Pull-through: providers are fetched and cached on first use, never pre-downloaded
 - Request coalescing: when many agents request the same uncached provider at once, a single upstream fetch is performed and shared — no thundering herd against `registry.terraform.io`
 - Dual-layer cache: local filesystem (fast) + optional S3-compatible object storage (durable)
@@ -69,7 +70,7 @@ Or with Helm, straight from the OCI registry (chart is cosign-signed like the im
 
 ```bash
 helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata \
-  --version 0.3.0 \
+  --version 0.4.0 \
   --namespace tf-mirror --create-namespace
 # With durable S3 cache:
 #   --set s3.enabled=true --set s3.bucket=tf-mirror \
@@ -119,8 +120,8 @@ All configuration is via environment variables:
 | `LISTEN_ADDR` | `:8080` | Address and port to listen on |
 | `CACHE_DIR` | `/cache` | Local filesystem cache directory |
 | `CACHE_MAX_BYTES` | _(empty)_ | Size budget for the local cache (e.g. `20GB`, `512Mi`, or raw bytes). When exceeded, least-recently-used files are evicted down to ~90% of the budget. Empty/`0` disables eviction (unbounded) |
-| `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry base URL |
-| `MIRROR_HOSTNAME` | _(host of `UPSTREAM_BASE`)_ | Registry hostname this mirror serves (the `{hostname}` path segment clients request); requests for any other hostname return 404. Only set it when clients address providers by a different name than the upstream URL |
+| `UPSTREAM_BASE` | `https://registry.terraform.io` | Upstream registry base URL. Accepts a comma-separated list to mirror [several registries](#multiple-registries); each entry is a URL, or `hostname=url` when the served hostname differs from the upstream's |
+| `MIRROR_HOSTNAME` | _(host of the first `UPSTREAM_BASE` entry)_ | Registry hostname this mirror serves (the `{hostname}` path segment clients request); requests for any other hostname return 404. Only set it when clients address providers by a different name than the upstream URL. With several upstreams it overrides the **first** entry's hostname; use the `hostname=url` form for the rest |
 | `S3_BUCKET` | _(empty)_ | S3 bucket name. **Leave empty to disable S3** — local filesystem cache only |
 | `S3_PREFIX` | `tf-mirror` | Key prefix within the S3 bucket |
 | `S3_ENDPOINT` | _(empty)_ | Custom S3 endpoint (OVH, MinIO, etc.) |
@@ -133,7 +134,7 @@ All configuration is via environment variables:
 | `PREWARM_PROVIDERS` | _(empty)_ | Comma-separated providers to warm into the cache at startup, each `[host/]namespace/type[@version]`. A bare provider warms only its versions index; `@version` also warms that version's archives and zips. Empty disables pre-warming |
 | `PREWARM_PLATFORMS` | `linux_amd64` | Comma-separated `os_arch` platforms to warm zips for (only applies to `@version` entries) |
 | `MODULES_ENABLED` | `false` | Serve the [module registry](#module-registry) protocol (adds `/.well-known/terraform.json` and `/v1/modules/`) |
-| `MODULES_UPSTREAM_BASE` | _(value of `UPSTREAM_BASE`)_ | Upstream module registry. Only set it when modules come from a different host than providers |
+| `MODULES_UPSTREAM_BASE` | _(first `UPSTREAM_BASE` entry)_ | Upstream module registry. Only set it when modules come from a different host than providers |
 
 > **Note on `AUTH_TOKEN`:** Terraform's `network_mirror` client does not send
 > authentication headers, so bearer auth is meant for an API gateway that injects
@@ -246,6 +247,54 @@ cache/
 
 ---
 
+## Multiple registries
+
+One terrastrata can mirror several registries, each under its own `{hostname}` path
+segment, sharing a single cache, PVC, and S3 bucket. List them in `UPSTREAM_BASE`:
+
+```bash
+# hostnames derived from each URL's host
+UPSTREAM_BASE=https://registry.terraform.io,https://registry.opentofu.org
+
+# explicit hostname where it differs from the upstream URL
+UPSTREAM_BASE=https://registry.terraform.io,registry.corp.example=https://nexus.corp/repo/tf
+```
+
+Cache entries are namespaced by hostname, so two registries publishing the same
+`namespace/type` never see each other's artifacts.
+
+Clients need one `network_mirror` block per registry, because the `include`
+patterns are matched per source address:
+
+```hcl
+provider_installation {
+  network_mirror {
+    url     = "https://tf-mirror.internal/"
+    include = ["registry.terraform.io/*/*", "registry.opentofu.org/*/*"]
+  }
+  direct {
+    exclude = ["registry.terraform.io/*/*", "registry.opentofu.org/*/*"]
+  }
+}
+```
+
+A hostname that is not configured returns 404 rather than being proxied — that
+refusal is deliberate, since silently forwarding an unknown hostname would cache
+one registry's content under another's keys.
+
+Pre-warming works across upstreams by writing the host into the entry:
+`PREWARM_PROVIDERS=registry.opentofu.org/hashicorp/null@3.2.2`.
+
+The `terrastrata_versions_index_total` metric carries an `upstream` label, so you
+can tell which registry is being served stale during an outage.
+
+> The module registry (below) stays single-upstream: module requests carry no
+> hostname segment — clients address terrastrata as the registry itself — so
+> there is nothing to multiplex on. `MODULES_UPSTREAM_BASE` selects its upstream
+> and defaults to the first `UPSTREAM_BASE` entry.
+
+---
+
 ## Module registry
 
 Set `MODULES_ENABLED=true` to also serve Terraform's
@@ -305,7 +354,8 @@ is happening to you.
 - `GET /metrics` — Prometheus metrics (always unauthenticated), including:
   - `terrastrata_cache_lookups_total{resource,result}` — cache hit/miss by resource
   - `terrastrata_http_requests_total{route,code}` and `terrastrata_http_request_duration_seconds{route}`
-  - `terrastrata_versions_index_total{outcome}` — versions-index freshness:
+  - `terrastrata_versions_index_total{upstream,outcome}` — versions-index freshness
+    per mirrored registry:
     `fresh` (within TTL), `revalidated` (refetched), `stale` (served after an
     upstream failure — **alert on a rising rate here**), `error` (no fallback)
   - `terrastrata_module_downloads_total{outcome}` — module downloads by outcome:
