@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CI runs the real **OpenTofu** CLI against the mirror alongside Terraform, and
+  asserts the two registries serve genuinely different bytes for the same
+  provider coordinate — the property that makes a shared cache safe.
+- Helm chart (0.5.1): Artifact Hub annotations (links, license, images,
+  maintainers), so the published chart lists properly on artifacthub.io.
+
+### Changed
+
+- Documentation now states OpenTofu support explicitly. terrastrata always spoke
+  the protocol OpenTofu uses, and multi-upstream made mirroring both registries
+  from one instance practical, but nothing said so. Verified end to end with
+  `tofu init` (OpenTofu 1.12.5), which installs and checksum-verifies a provider
+  served from the cache.
+
 ## [0.5.0] - 2026-08-04
 
 ### Added

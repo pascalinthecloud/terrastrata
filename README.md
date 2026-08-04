@@ -1,8 +1,15 @@
 # terrastrata
 
-> Pull-through Terraform provider cache registry
+> Pull-through provider cache registry for Terraform and OpenTofu
 
-**terrastrata** is a lightweight self-hosted proxy that implements the [Terraform Network Mirror Protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol). It fetches providers from the public registry on demand, caches them locally and in S3-compatible object storage, and serves subsequent requests entirely from cache — no repeated upstream calls, no internet dependency after first use.
+[![CI](https://github.com/pascalinthecloud/terrastrata/actions/workflows/ci.yml/badge.svg)](https://github.com/pascalinthecloud/terrastrata/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/pascalinthecloud/terrastrata?logo=github)](https://github.com/pascalinthecloud/terrastrata/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/pascalinthecloud/terrastrata)](go.mod)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+**terrastrata** is a lightweight self-hosted proxy that implements the [Terraform Network Mirror Protocol](https://developer.hashicorp.com/terraform/internals/provider-network-mirror-protocol). It fetches providers from the upstream registry on demand, caches them locally and in S3-compatible object storage, and serves subsequent requests entirely from cache — no repeated upstream calls, no internet dependency after first use.
+
+Works with **Terraform** and **OpenTofu** — the network mirror protocol is the same, and one instance can [mirror both registries at once](#multiple-registries). It can also act as a caching [module registry](#module-registry).
 
 ---
 
@@ -11,7 +18,7 @@
 - You are tired of GitHub outages causing terraform init to fail mid-pipeline for no reason on your end
 - Your CI/CD agents run in an isolated or bandwidth-constrained network
 - `registry.terraform.io` is slow, rate-limited, or simply unreachable
-- You want reproducible `terraform init` without pinning provider zips manually
+- You want reproducible `terraform init` / `tofu init` without pinning provider zips manually
 - You need a durable provider cache that survives pod restarts
 
 ---
@@ -19,16 +26,16 @@
 ## How it works
 
 ```
-terraform init
+terraform init / tofu init
       │
       ▼
  terrastrata
       │  cache HIT  → serve from local volume
-      │  cache MISS → fetch from registry.terraform.io
+      │  cache MISS → fetch from the upstream registry
       │               ├─ write to local PVC  (fast, ephemeral)
       │               └─ async write to S3   (durable, survives restarts)
       ▼
-registry.terraform.io   (only on first request per version)
+registry.terraform.io / registry.opentofu.org   (only on first request per version)
 ```
 
 Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. When S3 is enabled, it automatically warms the local volume on pod restart so nothing is re-fetched from the internet. Without S3, only the local PVC is used.
@@ -37,7 +44,7 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. Whe
 
 ## Features
 
-- Implements the Terraform Network Mirror Protocol — drop-in replacement, no Terraform changes needed
+- Implements the Terraform Network Mirror Protocol — drop-in for both Terraform and OpenTofu, no client changes beyond a `network_mirror` block
 - Mirrors [several registries](#multiple-registries) at once (Terraform, OpenTofu, private) from one deployment and one cache
 - Pull-through: providers are fetched and cached on first use, never pre-downloaded
 - Request coalescing: when many agents request the same uncached provider at once, a single upstream fetch is performed and shared — no thundering herd against `registry.terraform.io`

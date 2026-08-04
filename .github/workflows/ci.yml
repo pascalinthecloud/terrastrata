@@ -130,7 +130,9 @@ jobs:
           # module half of this job addresses the same server as mirror.test.
           echo "127.0.0.1 mirror.test" | sudo tee -a /etc/hosts >/dev/null
           docker run -d --name terrastrata --network host \
-            -e MODULES_ENABLED=true terrastrata:e2e
+            -e MODULES_ENABLED=true \
+            -e UPSTREAM_BASE="https://registry.terraform.io,https://registry.opentofu.org" \
+            terrastrata:e2e
           mkdir tls && cd tls
           openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
             -days 2 -subj "/CN=localhost" \
@@ -195,6 +197,66 @@ jobs:
           cp cold/main.tf warm/main.tf
           terraform -chdir=cold init -input=false -no-color
           terraform -chdir=warm init -input=false -no-color
+      # The same mirror, the same protocol, a different client. The README claims
+      # OpenTofu support; this is what stops that claim from rotting silently.
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_wrapper: false
+      - name: tofu init through the mirror
+        env:
+          SSL_CERT_FILE: ${{ github.workspace }}/tls/cert.pem
+        run: |
+          export TF_CLI_CONFIG_FILE=$PWD/tofu.tfrc
+          cat > tofu.tfrc <<'EOF'
+          provider_installation {
+            network_mirror {
+              url     = "https://localhost:8443/"
+              include = ["registry.opentofu.org/*/*"]
+            }
+            direct {
+              exclude = ["registry.opentofu.org/*/*"]
+            }
+          }
+          EOF
+          mkdir tofu-cold tofu-warm
+          cat > tofu-cold/main.tf <<'EOF'
+          terraform {
+            required_providers {
+              null = {
+                source  = "registry.opentofu.org/hashicorp/null"
+                version = "3.2.2"
+              }
+            }
+          }
+          EOF
+          cp tofu-cold/main.tf tofu-warm/main.tf
+          tofu -chdir=tofu-cold init -input=false -no-color
+          tofu -chdir=tofu-warm init -input=false -no-color
+      - name: Assert the OpenTofu provider is cached under its own hostname
+        run: |
+          base=https://localhost:8443/registry.opentofu.org/hashicorp/null
+          for path in \
+            "$base/index.json" \
+            "$base/3.2.2.json" \
+            "$base/3.2.2/download/linux_amd64/terraform-provider-null_3.2.2_linux_amd64.zip"; do
+            cache=$(curl -fs --cacert tls/cert.pem -o /dev/null -w '%header{x-cache}' "$path")
+            echo "$path -> X-Cache: $cache"
+            if [ "$cache" != "HIT" ]; then
+              echo "expected a cache HIT" >&2
+              exit 1
+            fi
+          done
+          # The two registries ship different bytes for the same coordinate, so a
+          # shared cache key would serve the wrong provider. Prove they differ.
+          zip=/hashicorp/null/3.2.2/download/linux_amd64/terraform-provider-null_3.2.2_linux_amd64.zip
+          tf=$(curl -fs --cacert tls/cert.pem "https://localhost:8443/registry.terraform.io$zip" | sha256sum | cut -d' ' -f1)
+          tofu=$(curl -fs --cacert tls/cert.pem "https://localhost:8443/registry.opentofu.org$zip" | sha256sum | cut -d' ' -f1)
+          echo "terraform=$tf"
+          echo "opentofu =$tofu"
+          if [ "$tf" = "$tofu" ]; then
+            echo "both hostnames served identical bytes: the cache is aliasing across upstreams" >&2
+            exit 1
+          fi
       - name: Assert everything the client needed is now cached
         run: |
           base=https://localhost:8443/registry.terraform.io/hashicorp/null
