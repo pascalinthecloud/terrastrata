@@ -16,6 +16,7 @@ import (
 	"github.com/pascalinthecloud/terrastrata/internal/cache"
 	"github.com/pascalinthecloud/terrastrata/internal/config"
 	"github.com/pascalinthecloud/terrastrata/internal/mirror"
+	"github.com/pascalinthecloud/terrastrata/internal/modules"
 	"github.com/pascalinthecloud/terrastrata/internal/observ"
 )
 
@@ -45,6 +46,22 @@ func newFakeRegistry(t *testing.T) *httptest.Server {
 	mux.HandleFunc("GET /zip", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(zip)
 	})
+
+	// Module registry protocol for ns/vpc/aws@1.0.0, so the wiring tests can
+	// exercise both protocols against one upstream.
+	mux.HandleFunc("GET /v1/modules/ns/vpc/aws/versions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"modules": []map[string]any{{"versions": []map[string]string{{"version": "1.0.0"}}}},
+		})
+	})
+	mux.HandleFunc("GET /v1/modules/ns/vpc/aws/1.0.0/download", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Terraform-Get", server.URL+"/mod.tar.gz//*?archive=tar.gz")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /mod.tar.gz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("\x1f\x8b fake module tarball"))
+	})
+
 	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
@@ -74,7 +91,20 @@ func newTestServer(t *testing.T, cfg config.Config, blobCache mirror.Cache) (*ht
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	srv := buildServer(cfg, handler, metrics, logger)
+	var mods *modules.Handler
+	if cfg.Modules.Enabled {
+		mods, err = modules.NewHandler(modules.Options{
+			Cache:      blobCache,
+			Upstream:   modules.NewUpstream(cfg.Modules.UpstreamBase, "terrastrata-test", 5*time.Second),
+			Metrics:    metrics,
+			StagingDir: t.TempDir(),
+			Logger:     logger,
+		})
+		if err != nil {
+			t.Fatalf("modules.NewHandler: %v", err)
+		}
+	}
+	srv := buildServer(cfg, handler, mods, metrics, logger)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts, metrics
@@ -167,5 +197,108 @@ func TestPanickingRequestIsRecordedInMetrics(t *testing.T) {
 	}
 	if metrics := get(t, ts.URL+"/metrics"); !strings.Contains(metrics.body, `code="500"`) {
 		t.Error("/metrics missing code=\"500\" for panicking request")
+	}
+}
+
+// modulesConfig returns a config with the module registry enabled against reg.
+func modulesConfig(regURL, token string) config.Config {
+	return config.Config{
+		UpstreamBase: regURL,
+		AuthToken:    token,
+		Modules:      config.ModulesConfig{Enabled: true, UpstreamBase: regURL},
+	}
+}
+
+// Registering the module and provider route patterns on one ServeMux panics:
+// /v1/modules/{ns}/{name}/{system}/{version}/download and
+// /{hostname}/{namespace}/{type}/{version}/download/{platform}/{filename} both
+// match some paths with neither being more specific. buildServer keeps them on
+// separate muxes; this guards that split, because the failure mode is a crash at
+// startup rather than a test failure somewhere quiet.
+func TestBothProtocolsRouteWithoutConflict(t *testing.T) {
+	reg := newFakeRegistry(t)
+	ts, _ := newTestServer(t, modulesConfig(reg.URL, ""), nil)
+
+	// Provider mirror still works alongside the module routes.
+	if r := get(t, ts.URL+"/registry.terraform.io/hashicorp/null/index.json"); r.status != http.StatusOK {
+		t.Errorf("provider index.json = %d, want 200", r.status)
+	}
+	if r := get(t, ts.URL+"/v1/modules/ns/vpc/aws/versions"); r.status != http.StatusOK {
+		t.Errorf("module versions = %d, want 200", r.status)
+	}
+}
+
+func TestModuleDiscoveryDocument(t *testing.T) {
+	reg := newFakeRegistry(t)
+
+	// Disabled by default: discovery must not appear, or clients would treat
+	// terrastrata as a module registry it is not configured to be.
+	off, _ := newTestServer(t, config.Config{UpstreamBase: reg.URL}, nil)
+	if r := get(t, off.URL+"/.well-known/terraform.json"); r.status == http.StatusOK {
+		t.Errorf("discovery served while modules are disabled = %d, want non-200", r.status)
+	}
+
+	ts, _ := newTestServer(t, modulesConfig(reg.URL, ""), nil)
+	r := get(t, ts.URL+"/.well-known/terraform.json")
+	if r.status != http.StatusOK {
+		t.Fatalf("discovery = %d, want 200", r.status)
+	}
+	if !strings.Contains(r.body, `"modules.v1":"/v1/modules/"`) {
+		t.Errorf("discovery body = %q", r.body)
+	}
+}
+
+// Terraform attaches registry credentials only to registry endpoints; the
+// go-getter fetch of X-Terraform-Get carries no Authorization header. So with
+// AUTH_TOKEN set, metadata must be protected but the archive must stay open, or
+// terraform init breaks on the download step.
+func TestModuleArchiveStaysUnauthenticated(t *testing.T) {
+	reg := newFakeRegistry(t)
+	ts, _ := newTestServer(t, modulesConfig(reg.URL, "sekrit"), nil)
+
+	// Discovery is the client's first request, before credentials are looked up.
+	if r := get(t, ts.URL+"/.well-known/terraform.json"); r.status != http.StatusOK {
+		t.Errorf("discovery with auth enabled = %d, want 200", r.status)
+	}
+
+	for _, protected := range []string{
+		"/v1/modules/ns/vpc/aws/versions",
+		"/v1/modules/ns/vpc/aws/1.0.0/download",
+	} {
+		if r := get(t, ts.URL+protected); r.status != http.StatusUnauthorized {
+			t.Errorf("%s without token = %d, want 401", protected, r.status)
+		}
+	}
+
+	if r := get(t, ts.URL+"/v1/modules/ns/vpc/aws/1.0.0/archive"); r.status != http.StatusOK {
+		t.Errorf("archive without token = %d, want 200 (must not require auth)", r.status)
+	}
+}
+
+func TestModuleDownloadRewritesHeaderThroughFullStack(t *testing.T) {
+	reg := newFakeRegistry(t)
+	ts, _ := newTestServer(t, modulesConfig(reg.URL, ""), nil)
+
+	resp, err := http.Get(ts.URL + "/v1/modules/ns/vpc/aws/1.0.0/download")
+	if err != nil {
+		t.Fatalf("GET download: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("download = %d, want 204", resp.StatusCode)
+	}
+	want := "/v1/modules/ns/vpc/aws/1.0.0/archive//*?archive=tar.gz"
+	if got := resp.Header.Get("X-Terraform-Get"); got != want {
+		t.Fatalf("X-Terraform-Get = %q, want %q", got, want)
+	}
+
+	// The header Terraform receives must actually resolve to a served archive.
+	// go-getter splits the "//subdir" off before fetching and carries the query
+	// over to the base URL, so this is the request terrastrata really sees —
+	// the archive route never has to match a path containing "//".
+	fetch := "/v1/modules/ns/vpc/aws/1.0.0/archive?archive=tar.gz"
+	if r := get(t, ts.URL+fetch); r.status != http.StatusOK {
+		t.Errorf("following X-Terraform-Get = %d, want 200", r.status)
 	}
 }

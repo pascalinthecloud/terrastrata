@@ -95,6 +95,12 @@ spec:
             # Bound the cache below the PVC size so the volume never fills (LRU eviction).
             - name: CACHE_MAX_BYTES
               value: "18GB"
+            # --- Optional module registry ---
+            # A registry, not a mirror: consumers must point each module's
+            # source at this host (source = "<host>/<ns>/<name>/<system>").
+            # Module archives are cached unverified — the protocol has no checksums.
+            # - name: MODULES_ENABLED
+            #   value: "true"
             # --- Optional startup cache pre-warming ---
             # - name: PREWARM_PROVIDERS # [host/]ns/type[@version], comma-separated
             #   value: "hashicorp/azurerm@3.110.0,hashicorp/null"

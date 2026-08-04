@@ -48,6 +48,9 @@ Cache lookup order: **local PVC → S3 (if enabled) → upstream registry**. Whe
 - Versions index is revalidated on a configurable TTL so new provider releases appear; if the upstream registry is down at revalidation time, the last-known-good list is served stale (`X-Cache: STALE`) instead of failing
 - `X-Cache: HIT/MISS/STALE` response headers for observability
 - `/health` endpoint for liveness/readiness probes
+- Optional [module registry](#module-registry) (`MODULES_ENABLED`): caches
+  registry modules too, though unlike providers it requires rewriting each
+  module's `source` — Terraform has no mirror protocol for modules
 
 ---
 
@@ -129,12 +132,20 @@ All configuration is via environment variables:
 | `INDEX_TTL` | `10m` | How long a cached provider **versions index** is served before being revalidated upstream (Go duration, e.g. `30m`, `1h`). `0` disables expiry. Archives and zips are immutable and never expire |
 | `PREWARM_PROVIDERS` | _(empty)_ | Comma-separated providers to warm into the cache at startup, each `[host/]namespace/type[@version]`. A bare provider warms only its versions index; `@version` also warms that version's archives and zips. Empty disables pre-warming |
 | `PREWARM_PLATFORMS` | `linux_amd64` | Comma-separated `os_arch` platforms to warm zips for (only applies to `@version` entries) |
+| `MODULES_ENABLED` | `false` | Serve the [module registry](#module-registry) protocol (adds `/.well-known/terraform.json` and `/v1/modules/`) |
+| `MODULES_UPSTREAM_BASE` | _(value of `UPSTREAM_BASE`)_ | Upstream module registry. Only set it when modules come from a different host than providers |
 
 > **Note on `AUTH_TOKEN`:** Terraform's `network_mirror` client does not send
 > authentication headers, so bearer auth is meant for an API gateway that injects
 > the header, or for non-Terraform consumers. For Terraform clients, rely on
 > network policy / ingress controls instead. `/health` and `/metrics` are always
 > unauthenticated.
+>
+> Module registry endpoints are different: Terraform *does* send credentials from
+> a `credentials` block to them, so `AUTH_TOKEN` works for modules. The module
+> **archive** endpoint stays unauthenticated regardless, because Terraform
+> attaches credentials only to registry requests and not to the archive download
+> that follows.
 
 ### OVH Object Storage example
 
@@ -218,6 +229,76 @@ This matches the [network mirror protocol](https://developer.hashicorp.com/terra
 endpoints: `index.json` (versions) and `<version>.json` (archives). The same
 structure is mirrored under your configured S3 prefix.
 
+Modules (when enabled) live beside it under a `_modules/` root, which no provider
+hostname can collide with:
+
+```
+cache/
+└── _modules/
+    └── claranet/
+        └── regions/
+            └── azurerm/
+                ├── versions.json        # version list
+                └── 8.0.6/
+                    ├── location.json    # resolved upstream source
+                    └── archive          # the module tarball
+```
+
+---
+
+## Module registry
+
+Set `MODULES_ENABLED=true` to also serve Terraform's
+[module registry protocol](https://developer.hashicorp.com/terraform/internals/module-registry-protocol).
+
+**This works differently from providers, and the difference matters.** Terraform
+has no *mirror* protocol for modules — only the registry protocol. So terrastrata
+does not transparently intercept module traffic the way it does for providers:
+it becomes a registry that clients address directly, which means **rewriting the
+`source` of every module you want cached**:
+
+```hcl
+module "regions" {
+  # was: claranet/regions/azurerm
+  source  = "tf-mirror.internal/claranet/regions/azurerm"
+  version = "8.0.6"
+}
+```
+
+Terraform discovers the API via `https://tf-mirror.internal/.well-known/terraform.json`,
+so the mirror must be reachable over **https** under a hostname containing a dot
+(Terraform rejects `localhost:8443` as a registry hostname).
+
+There is nothing to configure on the client beyond the source address. Only
+registry-sourced modules can be cached — `git::`, local paths, and other
+[module sources](https://developer.hashicorp.com/terraform/language/modules/sources)
+never touch a registry and are unaffected.
+
+### What gets cached
+
+On a download, the upstream registry answers with an `X-Terraform-Get` pointing
+at the module's real source. terrastrata rewrites that to its own archive
+endpoint, then fetches, caches, and serves the archive itself.
+
+In practice the public registry returns a `git::` source for every module
+(`git::https://github.com/OWNER/REPO?ref=<commit>`), despite the protocol docs
+showing an https tarball. terrastrata maps GitHub sources onto the equivalent
+`codeload.github.com` tarball, so no git client is involved. It also strips the
+single wrapper directory GitHub tarballs add, because Terraform does not expand
+the go-getter `//*` subdir glob for registry modules.
+
+Sources it cannot fetch — a non-GitHub `git::` host, `ssh://`, `s3::`, `hg::` —
+are **passed through unchanged** with `X-Cache: BYPASS`. `terraform init` still
+works wherever the client can reach the original source, but nothing is cached.
+Watch `terrastrata_module_downloads_total{outcome="bypass"}` to see whether that
+is happening to you.
+
+> **No checksums.** The module registry protocol publishes none, so module
+> archives cannot be verified the way provider zips are (which terrastrata checks
+> against the registry-published SHA-256 before caching). Integrity rests on the
+> https fetch plus a 512 MiB size cap. If that trade-off is unacceptable, leave
+> `MODULES_ENABLED` off.
+
 ## Observability
 
 - `GET /health` — liveness/readiness probe (always unauthenticated)
@@ -227,6 +308,10 @@ structure is mirrored under your configured S3 prefix.
   - `terrastrata_versions_index_total{outcome}` — versions-index freshness:
     `fresh` (within TTL), `revalidated` (refetched), `stale` (served after an
     upstream failure — **alert on a rising rate here**), `error` (no fallback)
+  - `terrastrata_module_downloads_total{outcome}` — module downloads by outcome:
+    `cached` (served from terrastrata's own archive), `bypass` (a source it
+    cannot cache, passed through — **a rising rate means modules are not
+    actually being cached**), `error`
   - `terrastrata_prewarm_total{resource,result}` — startup pre-warm successes/failures
   - `terrastrata_cache_size_bytes` (gauge), `terrastrata_cache_evictions_total`,
     `terrastrata_cache_evicted_bytes_total` — local cache size and eviction activity
@@ -291,7 +376,7 @@ per replica rather than once per request.
 - [x] Size-bounded LRU cache eviction (`CACHE_MAX_BYTES`)
 - [x] Request coalescing for concurrent cold requests
 - [x] Multi-replica high availability (S3-backed)
-- [ ] Support for module registry protocol
+- [x] Support for module registry protocol (`MODULES_ENABLED`)
 
 ---
 

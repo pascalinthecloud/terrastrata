@@ -1,35 +1,14 @@
 package mirror
 
 import (
-	"fmt"
-	"regexp"
-	"strings"
+	"github.com/pascalinthecloud/terrastrata/internal/pathsafe"
 )
 
 // Path component validation for Terraform provider coordinates.
 //
-// These validators are the cache's first line of defense. Every path segment
-// that becomes part of a cache key or an upstream URL MUST pass through them, so
-// that no request can inject "..", path separators, or control characters into a
-// filesystem path or remote request.
-var (
-	// hostnameRe matches a DNS-style registry hostname, optionally with a port.
-	hostnameRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*(:[0-9]{1,5})?$`)
-
-	// nameRe matches a provider namespace or type: alphanumerics with internal
-	// hyphens/underscores. No dots, so "." and ".." are impossible.
-	nameRe = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$`)
-
-	// versionRe matches a SemVer-like version (digits, dots, pre-release/build
-	// metadata). The explicit "no .." check below covers the dot-adjacency case.
-	versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9._-]+)?$`)
-
-	// platformRe matches an os_arch identifier such as "linux_amd64".
-	platformRe = regexp.MustCompile(`^[a-z0-9]+_[a-z0-9]+$`)
-
-	// filenameRe matches a provider zip filename with no path component.
-	filenameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*\.zip$`)
-)
+// The traversal-proof checks themselves live in internal/pathsafe, shared with
+// the module registry; this file only names the coordinates a provider request
+// is made of.
 
 // Coordinates identifies a single provider request after validation. Fields are
 // only populated for the parts relevant to a given endpoint.
@@ -42,29 +21,16 @@ type Coordinates struct {
 	Filename  string
 }
 
-func validate(field, value string, re *regexp.Regexp) error {
-	if value == "" {
-		return fmt.Errorf("missing %s", field)
-	}
-	if strings.Contains(value, "..") || strings.ContainsAny(value, "/\\\x00") {
-		return fmt.Errorf("invalid %s %q", field, value)
-	}
-	if !re.MatchString(value) {
-		return fmt.Errorf("invalid %s %q", field, value)
-	}
-	return nil
-}
-
 // ValidateProvider checks the hostname/namespace/type triple shared by every
 // endpoint.
 func ValidateProvider(hostname, namespace, typ string) (Coordinates, error) {
-	if err := validate("hostname", hostname, hostnameRe); err != nil {
+	if err := pathsafe.Hostname("hostname", hostname); err != nil {
 		return Coordinates{}, err
 	}
-	if err := validate("namespace", namespace, nameRe); err != nil {
+	if err := pathsafe.Name("namespace", namespace); err != nil {
 		return Coordinates{}, err
 	}
-	if err := validate("type", typ, nameRe); err != nil {
+	if err := pathsafe.Name("type", typ); err != nil {
 		return Coordinates{}, err
 	}
 	return Coordinates{Hostname: hostname, Namespace: namespace, Type: typ}, nil
@@ -72,7 +38,7 @@ func ValidateProvider(hostname, namespace, typ string) (Coordinates, error) {
 
 // withVersion validates and attaches a version to the coordinates.
 func (c Coordinates) withVersion(version string) (Coordinates, error) {
-	if err := validate("version", version, versionRe); err != nil {
+	if err := pathsafe.Version("version", version); err != nil {
 		return Coordinates{}, err
 	}
 	c.Version = version
@@ -82,10 +48,10 @@ func (c Coordinates) withVersion(version string) (Coordinates, error) {
 // withDownload validates and attaches the platform and filename used by the zip
 // endpoint.
 func (c Coordinates) withDownload(platform, filename string) (Coordinates, error) {
-	if err := validate("platform", platform, platformRe); err != nil {
+	if err := pathsafe.Platform("platform", platform); err != nil {
 		return Coordinates{}, err
 	}
-	if err := validate("filename", filename, filenameRe); err != nil {
+	if err := pathsafe.ZipFilename("filename", filename); err != nil {
 		return Coordinates{}, err
 	}
 	c.Platform = platform

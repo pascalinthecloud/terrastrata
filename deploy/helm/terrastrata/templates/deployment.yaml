@@ -56,6 +56,14 @@ spec:
             - name: CACHE_MAX_BYTES
               value: {{ .Values.config.cacheMaxBytes | quote }}
             {{- end }}
+            {{- if .Values.modules.enabled }}
+            - name: MODULES_ENABLED
+              value: "true"
+            {{- if .Values.modules.upstreamBase }}
+            - name: MODULES_UPSTREAM_BASE
+              value: {{ .Values.modules.upstreamBase | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.prewarm.providers }}
             - name: PREWARM_PROVIDERS
               value: {{ join "," .Values.prewarm.providers | quote }}

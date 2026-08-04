@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pascalinthecloud/terrastrata/internal/cache"
+	"github.com/pascalinthecloud/terrastrata/internal/freshness"
 )
 
 // benchWriter is a no-op http.ResponseWriter so serve benchmarks measure the
@@ -57,8 +58,8 @@ func BenchmarkVersionsEnvelope(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		env, _ := wrapVersions(body, now)
-		if _, _, ok := unwrapVersions(env); !ok {
+		env, _ := freshness.Wrap(body, now)
+		if _, _, ok := freshness.Unwrap(env); !ok {
 			b.Fatal("unwrap failed")
 		}
 	}

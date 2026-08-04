@@ -20,6 +20,7 @@ import (
 	"github.com/pascalinthecloud/terrastrata/internal/config"
 	"github.com/pascalinthecloud/terrastrata/internal/httpx"
 	"github.com/pascalinthecloud/terrastrata/internal/mirror"
+	"github.com/pascalinthecloud/terrastrata/internal/modules"
 	"github.com/pascalinthecloud/terrastrata/internal/observ"
 	"github.com/pascalinthecloud/terrastrata/internal/prewarm"
 )
@@ -96,7 +97,25 @@ func run() error {
 		return err
 	}
 
-	srv := buildServer(cfg, handler, metrics, logger)
+	// Optional module registry. Unlike providers there is no mirror protocol
+	// for modules, so terrastrata serves the registry protocol directly and
+	// clients address it by source = "<this host>/<ns>/<name>/<system>".
+	var modHandler *modules.Handler
+	if cfg.Modules.Enabled {
+		modHandler, err = modules.NewHandler(modules.Options{
+			Cache:       blobCache,
+			Upstream:    modules.NewUpstream(cfg.Modules.UpstreamBase, "terrastrata/"+version, cfg.UpstreamTimeout),
+			Metrics:     metrics,
+			StagingDir:  filepath.Join(cfg.CacheDir, ".staging"),
+			VersionsTTL: cfg.IndexTTL,
+			Logger:      logger,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	srv := buildServer(cfg, handler, modHandler, metrics, logger)
 
 	logger.Info("starting terrastrata",
 		"version", version,
@@ -109,6 +128,7 @@ func run() error {
 		"index_ttl", cfg.IndexTTL,
 		"prewarm", len(cfg.PrewarmProviders),
 		"cache_max_bytes", cfg.CacheMaxBytes,
+		"modules", cfg.Modules.Enabled,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -136,7 +156,14 @@ func run() error {
 // Routing: /health and /metrics are unauthenticated operational endpoints; all
 // mirror traffic is wrapped in optional bearer auth. Cross-cutting middleware
 // (recovery, request-id, metrics, logging) wraps the whole tree.
-func buildServer(cfg config.Config, h *mirror.Handler, metrics *observ.Metrics, logger *slog.Logger) *http.Server {
+//
+// The provider mirror patterns are confined to their own mux on purpose. The
+// module route /v1/modules/{ns}/{name}/{system}/{version}/download and the
+// provider route /{hostname}/{ns}/{type}/{version}/download/{platform}/{filename}
+// both match some paths with neither being more specific, so registering them on
+// one ServeMux panics at startup. Keeping providers in mirrorMux and modules on
+// root makes that collision structurally impossible.
+func buildServer(cfg config.Config, h *mirror.Handler, mods *modules.Handler, metrics *observ.Metrics, logger *slog.Logger) *http.Server {
 	mirrorMux := http.NewServeMux()
 	h.Routes(mirrorMux)
 
@@ -144,6 +171,23 @@ func buildServer(cfg config.Config, h *mirror.Handler, metrics *observ.Metrics, 
 	root.Handle("GET /health", healthHandler())
 	root.Handle("GET /metrics", metrics.Handler())
 	root.Handle("/", httpx.BearerAuth(cfg.AuthToken)(mirrorMux))
+
+	if mods != nil {
+		moduleMux := http.NewServeMux()
+		mods.RoutesMeta(moduleMux)
+
+		// Service discovery must be unauthenticated: it is the first request a
+		// client makes, before it looks up any credentials for the host.
+		root.HandleFunc("GET /.well-known/terraform.json", mods.Discovery)
+		// The archive endpoint must also stay unauthenticated. Terraform sends
+		// registry credentials only to registry endpoints; the go-getter fetch of
+		// X-Terraform-Get that follows carries no Authorization header, so putting
+		// the archive behind auth would break terraform init whenever AUTH_TOKEN
+		// is set. The exact pattern takes precedence over the /v1/modules/
+		// subtree below.
+		root.HandleFunc(modules.ArchivePattern, mods.ArchiveHandler())
+		root.Handle("/v1/modules/", httpx.BearerAuth(cfg.AuthToken)(moduleMux))
+	}
 
 	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "terrastrata: Terraform provider network mirror", http.StatusNotFound)

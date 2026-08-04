@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/pascalinthecloud/terrastrata/internal/freshness"
 )
 
 // maxZipBytes caps a single provider archive we will stage and cache. Real
@@ -264,7 +266,7 @@ func (h *Handler) loadVersions(ctx context.Context, key string) (body []byte, fe
 		h.log.Warn("cache read failed", "key", key, "err", err)
 		return nil, time.Time{}, false
 	}
-	return unwrapVersions(raw)
+	return freshness.Unwrap(raw)
 }
 
 // fetchVersions retrieves and builds the mirror versions index from upstream.
@@ -278,7 +280,7 @@ func (h *Handler) fetchVersions(ctx context.Context, c Coordinates) ([]byte, err
 
 // storeVersions caches the versions body wrapped in a freshness envelope.
 func (h *Handler) storeVersions(ctx context.Context, key string, body []byte) {
-	enveloped, err := wrapVersions(body, h.now())
+	enveloped, err := freshness.Wrap(body, h.now())
 	if err != nil {
 		h.log.Warn("versions envelope marshal failed", "key", key, "err", err)
 		return

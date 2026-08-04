@@ -126,11 +126,15 @@ jobs:
       # makes terraform and curl trust it without touching the system store.
       - name: Run terrastrata behind a TLS proxy
         run: |
-          docker run -d --name terrastrata --network host terrastrata:e2e
+          # Terraform rejects a module registry hostname without a dot, so the
+          # module half of this job addresses the same server as mirror.test.
+          echo "127.0.0.1 mirror.test" | sudo tee -a /etc/hosts >/dev/null
+          docker run -d --name terrastrata --network host \
+            -e MODULES_ENABLED=true terrastrata:e2e
           mkdir tls && cd tls
           openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
             -days 2 -subj "/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+            -addext "subjectAltName=DNS:localhost,DNS:mirror.test,IP:127.0.0.1"
           cat > nginx.conf <<'EOF'
           events {}
           http {
@@ -205,6 +209,60 @@ jobs:
               exit 1
             fi
           done
+      # The module half. Unlike providers there is no mirror protocol, so
+      # terrastrata is addressed as the registry itself and Terraform finds it
+      # through /.well-known/terraform.json. This is the only test that proves
+      # the X-Terraform-Get rewrite and the codeload repacking against the real
+      # client: Terraform does not expand the go-getter "//*" subdir glob for
+      # registry modules, so a wrongly-shaped archive fails only here.
+      #
+      # claranet/regions is chosen because it is ~27 KB and declares no
+      # providers, so this step downloads nothing heavy. A cold fetch reaches
+      # codeload.github.com unauthenticated.
+      - name: terraform init a module through the registry
+        env:
+          SSL_CERT_FILE: ${{ github.workspace }}/tls/cert.pem
+        run: |
+          mkdir mod-cold mod-warm
+          cat > mod-cold/main.tf <<'EOF'
+          module "regions" {
+            source  = "mirror.test:8443/claranet/regions/azurerm"
+            version = "8.0.6"
+          }
+          EOF
+          cp mod-cold/main.tf mod-warm/main.tf
+          terraform -chdir=mod-cold init -input=false -no-color
+          terraform -chdir=mod-warm init -input=false -no-color
+
+          # The module must land at its own root, not inside the tarball's
+          # wrapper directory and not at a literal "*" path.
+          dir=$(python3 -c "import json;print(json.load(open('mod-cold/.terraform/modules/modules.json'))['Modules'][1]['Dir'])")
+          echo "module installed at: $dir"
+          case "$dir" in
+            *'*'*) echo "subdir glob was not expanded" >&2; exit 1 ;;
+          esac
+          test -f "mod-cold/$dir/README.md" || {
+            echo "module root does not look right:" >&2
+            ls -la "mod-cold/$dir" >&2
+            exit 1
+          }
+      - name: Assert the module is now cached
+        run: |
+          base=https://mirror.test:8443/v1/modules/claranet/regions/azurerm
+          for path in "$base/versions" "$base/8.0.6/download" "$base/8.0.6/archive?archive=tar.gz"; do
+            cache=$(curl -fs --cacert tls/cert.pem -o /dev/null -w '%header{x-cache}' "$path")
+            echo "$path -> X-Cache: $cache"
+            if [ "$cache" != "HIT" ]; then
+              echo "expected a cache HIT" >&2
+              exit 1
+            fi
+          done
+          # Every module resolution must be served from our own archive, not
+          # passed through to the upstream source.
+          curl -fs http://127.0.0.1:8080/metrics \
+            | grep 'terrastrata_module_downloads_total{outcome="bypass"}' \
+            && { echo "a module download bypassed the cache" >&2; exit 1; }
+          exit 0
       - name: Container logs
         if: failure()
         run: |

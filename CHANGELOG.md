@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional Terraform **module registry** support (`MODULES_ENABLED=true`, off by
+  default), serving `/.well-known/terraform.json` and `/v1/modules/`. Module
+  version lists, resolved locations, and archives are cached in the same
+  two-layer cache as provider zips, with the same TTL revalidation,
+  serve-stale-on-outage, and request coalescing.
+
+  Unlike providers this is a *registry*, not a mirror — Terraform has no module
+  mirror protocol — so each module's `source` must be rewritten to point at
+  terrastrata (`source = "tf-mirror.internal/<ns>/<name>/<system>"`).
+
+  Two behaviors worth knowing: the public registry hands out `git::` sources for
+  every module (not the https tarball its protocol docs show), which terrastrata
+  maps onto GitHub's codeload tarball so no git client is needed; and module
+  archives are cached **unverified**, because the protocol publishes no
+  checksums. Sources that cannot be fetched (non-GitHub `git::`, `ssh://`,
+  `s3::`) are passed through with `X-Cache: BYPASS` instead of failing.
+- `terrastrata_module_downloads_total{outcome}` metric (`cached`/`bypass`/`error`).
+  A rising `bypass` rate means modules are resolving but not being cached.
+- Helm chart (0.4.0): `modules.enabled` and `modules.upstreamBase`.
+
+### Changed
+
+- Path-component validation moved to `internal/pathsafe` and the versions-index
+  freshness envelope to `internal/freshness`, both now shared by the provider and
+  module paths. No behavior change.
+
 ## [0.3.1] - 2026-08-03
 
 ### Added

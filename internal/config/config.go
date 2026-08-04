@@ -79,7 +79,19 @@ type Config struct {
 	// eviction (unbounded growth).
 	CacheMaxBytes int64
 
+	Modules ModulesConfig
+
 	S3 S3Config
+}
+
+// ModulesConfig holds the optional module registry settings. Module support is
+// opt-in because enabling it adds routes (/.well-known/terraform.json and
+// /v1/modules/) that change how a client discovers the service.
+type ModulesConfig struct {
+	Enabled bool
+	// UpstreamBase is the module registry to cache. Defaults to UpstreamBase,
+	// since the public registry serves both protocols on one host.
+	UpstreamBase string
 }
 
 // S3Config holds the optional durable cache backend settings. It is only active
@@ -141,6 +153,15 @@ func FromEnv() (Config, error) {
 	}
 	cfg.CacheMaxBytes = maxBytes
 
+	enabled, err := parseBool("MODULES_ENABLED", os.Getenv("MODULES_ENABLED"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Modules = ModulesConfig{
+		Enabled:      enabled,
+		UpstreamBase: strings.TrimRight(envOr("MODULES_UPSTREAM_BASE", cfg.UpstreamBase), "/"),
+	}
+
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -180,6 +201,16 @@ func (c Config) validate() error {
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return fmt.Errorf("config: UPSTREAM_BASE scheme %q must be http or https", u.Scheme)
+	}
+
+	if c.Modules.Enabled {
+		u, err := url.Parse(c.Modules.UpstreamBase)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("config: MODULES_UPSTREAM_BASE %q is not a valid absolute URL", c.Modules.UpstreamBase)
+		}
+		if u.Scheme != "https" && u.Scheme != "http" {
+			return fmt.Errorf("config: MODULES_UPSTREAM_BASE scheme %q must be http or https", u.Scheme)
+		}
 	}
 
 	// Static S3 credentials are both-or-neither: a partial pair is a
@@ -265,6 +296,22 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// parseBool parses a boolean environment value ("true"/"false"/"1"/"0", per
+// strconv.ParseBool). Empty means false. Anything else is an error rather than a
+// silent false, so MODULES_ENABLED=yes fails loudly instead of quietly disabling
+// a feature the operator asked for.
+func parseBool(key, s string) (bool, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false, nil
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return false, fmt.Errorf("config: invalid %s %q (want true or false)", key, s)
+	}
+	return v, nil
 }
 
 func envOr(key, fallback string) string {
