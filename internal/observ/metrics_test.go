@@ -14,7 +14,7 @@ import (
 func TestMetricsSurface(t *testing.T) {
 	m := NewMetrics()
 	m.CacheLookup("versions", true)
-	m.VersionsIndexOutcome("stale")
+	m.VersionsIndexOutcome("registry.terraform.io", "stale")
 	m.PrewarmResult("zip", true)
 	m.PrewarmResult("archives", false)
 
@@ -22,7 +22,7 @@ func TestMetricsSurface(t *testing.T) {
 
 	for _, want := range []string{
 		`terrastrata_cache_lookups_total{resource="versions",result="hit"} 1`,
-		`terrastrata_versions_index_total{outcome="stale"} 1`,
+		`terrastrata_versions_index_total{outcome="stale",upstream="registry.terraform.io"} 1`,
 		`terrastrata_prewarm_total{resource="zip",result="ok"} 1`,
 		`terrastrata_prewarm_total{resource="archives",result="error"} 1`,
 	} {

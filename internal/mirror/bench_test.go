@@ -73,8 +73,7 @@ func benchHandler(b *testing.B) *Handler {
 	}
 	h, err := NewHandler(Options{
 		Cache:      c,
-		Upstream:   NewUpstream("http://unused.invalid", "bench", time.Second),
-		Hostname:   "registry.terraform.io",
+		Upstreams:  SingleUpstream("registry.terraform.io", NewUpstream("http://unused.invalid", "bench", time.Second)),
 		StagingDir: b.TempDir(),
 		IndexTTL:   time.Hour, // keep cached entry fresh so we measure the HIT path
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),

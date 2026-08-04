@@ -399,3 +399,118 @@ func TestFromEnvModules(t *testing.T) {
 		}
 	})
 }
+
+func TestParseUpstreams(t *testing.T) {
+	t.Run("single value behaves as before", func(t *testing.T) {
+		clearEnv(t)
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if len(cfg.Upstreams) != 1 {
+			t.Fatalf("Upstreams = %d entries, want 1", len(cfg.Upstreams))
+		}
+		if cfg.Upstreams[0].Hostname != "registry.terraform.io" || cfg.Upstreams[0].Base != DefaultUpstreamBase {
+			t.Errorf("Upstreams[0] = %+v", cfg.Upstreams[0])
+		}
+		// The convenience fields must keep pointing at the primary.
+		if cfg.UpstreamBase != DefaultUpstreamBase || cfg.MirrorHostname != "registry.terraform.io" {
+			t.Errorf("UpstreamBase=%q MirrorHostname=%q", cfg.UpstreamBase, cfg.MirrorHostname)
+		}
+	})
+
+	t.Run("hostnames derived from URL hosts", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("UPSTREAM_BASE", "https://registry.terraform.io,https://registry.opentofu.org/")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		want := []UpstreamConfig{
+			{Hostname: "registry.terraform.io", Base: "https://registry.terraform.io"},
+			// Also asserts the trailing slash is trimmed.
+			{Hostname: "registry.opentofu.org", Base: "https://registry.opentofu.org"},
+		}
+		if !slices.Equal(cfg.Upstreams, want) {
+			t.Errorf("Upstreams = %+v, want %+v", cfg.Upstreams, want)
+		}
+	})
+
+	t.Run("explicit hostname=url form", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("UPSTREAM_BASE", "https://registry.terraform.io,registry.corp.example=https://nexus.corp/repo/tf")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		got := cfg.Upstreams[1]
+		if got.Hostname != "registry.corp.example" || got.Base != "https://nexus.corp/repo/tf" {
+			t.Errorf("Upstreams[1] = %+v", got)
+		}
+	})
+
+	t.Run("a URL containing = is not split", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("UPSTREAM_BASE", "https://nexus.corp/repo?token=abc")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.Upstreams[0].Base != "https://nexus.corp/repo?token=abc" {
+			t.Errorf("Base = %q, want the URL intact", cfg.Upstreams[0].Base)
+		}
+	})
+
+	t.Run("MIRROR_HOSTNAME overrides the first entry only", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("UPSTREAM_BASE", "https://registry.terraform.io,https://registry.opentofu.org")
+		t.Setenv("MIRROR_HOSTNAME", "tf.internal")
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.Upstreams[0].Hostname != "tf.internal" {
+			t.Errorf("Upstreams[0].Hostname = %q, want tf.internal", cfg.Upstreams[0].Hostname)
+		}
+		if cfg.Upstreams[1].Hostname != "registry.opentofu.org" {
+			t.Errorf("Upstreams[1].Hostname = %q, want it untouched", cfg.Upstreams[1].Hostname)
+		}
+		if cfg.MirrorHostname != "tf.internal" {
+			t.Errorf("MirrorHostname = %q", cfg.MirrorHostname)
+		}
+	})
+}
+
+func TestParseUpstreamsRejectsBadInput(t *testing.T) {
+	cases := []struct {
+		name     string
+		upstream string
+		hostname string
+	}{
+		{"malformed URL", "not-a-url", ""},
+		{"missing scheme", "registry.terraform.io", ""},
+		{"unsupported scheme", "ftp://registry.terraform.io", ""},
+		{"empty url after hostname", "registry.corp.example=", ""},
+		// A silently shadowed upstream would be a nasty bug, so duplicates fail fast.
+		{"duplicate hostname", "https://registry.terraform.io,https://registry.terraform.io", ""},
+		{"duplicate differing only in case", "https://registry.terraform.io,Registry.Terraform.IO=https://mirror.corp", ""},
+		// A hostname the router could never match is a misconfiguration.
+		{"hostname with a slash", "reg/istry=https://registry.terraform.io", ""},
+		{"hostname with a space", "bad host=https://registry.terraform.io", ""},
+		// The override must not be able to smuggle one in either.
+		{"MIRROR_HOSTNAME collides with a later entry", "https://registry.terraform.io,https://registry.opentofu.org", "registry.opentofu.org"},
+		{"MIRROR_HOSTNAME is not routable", "https://registry.terraform.io", "not a host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("UPSTREAM_BASE", tc.upstream)
+			if tc.hostname != "" {
+				t.Setenv("MIRROR_HOSTNAME", tc.hostname)
+			}
+			if _, err := FromEnv(); err == nil {
+				t.Errorf("FromEnv(UPSTREAM_BASE=%q) = nil error, want a failure", tc.upstream)
+			}
+		})
+	}
+}

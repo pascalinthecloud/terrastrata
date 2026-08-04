@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-upstream mirroring**: one terrastrata can now mirror several registries
+  — Terraform, OpenTofu, a private registry — each under its own `{hostname}`
+  path segment, sharing a single cache, PVC, and S3 bucket. `UPSTREAM_BASE`
+  accepts a comma-separated list where each entry is a URL (the served hostname
+  is the URL's host) or `hostname=url` when the two differ:
+
+  ```
+  UPSTREAM_BASE=https://registry.terraform.io,https://registry.opentofu.org
+  ```
+
+  Cache keys were already namespaced by hostname, so registries publishing the
+  same `namespace/type` cannot alias each other. A hostname that is not
+  configured still returns 404 rather than being proxied.
+- Helm chart (0.5.0): `config.upstreams`, a list of `{hostname?, url}` that
+  replaces `config.upstreamBase` when set.
+
+### Changed
+
+- `terrastrata_versions_index_total` gains an `upstream` label, so a stale-serving
+  outage can be attributed to a specific registry. Queries that already aggregate
+  (`sum by (outcome)`, as the bundled Grafana dashboard does) are unaffected;
+  queries selecting raw series will see the extra label.
+- `MIRROR_HOSTNAME` now overrides the hostname of the **first** `UPSTREAM_BASE`
+  entry. With a single upstream — the only case that existed before — this is
+  exactly its previous meaning.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added

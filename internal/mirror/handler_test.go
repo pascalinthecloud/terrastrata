@@ -98,9 +98,8 @@ func newTestHandlerTTL(t *testing.T, base string, ttl time.Duration) *Handler {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := NewHandler(Options{
 		Cache:      c,
-		Upstream:   u,
+		Upstreams:  SingleUpstream("registry.terraform.io", u),
 		Metrics:    NopMetrics{},
-		Hostname:   "registry.terraform.io",
 		StagingDir: t.TempDir(),
 		IndexTTL:   ttl,
 		Logger:     log,
@@ -518,16 +517,21 @@ func TestVersionsIndexTTLDisabledNeverRevalidates(t *testing.T) {
 
 // recordingMetrics counts versions-index outcomes for assertions.
 type recordingMetrics struct {
-	mu       sync.Mutex
-	outcomes map[string]int
+	mu        sync.Mutex
+	outcomes  map[string]int
+	upstreams map[string]int
 }
 
 func (m *recordingMetrics) CacheLookup(string, bool) {}
 
-func (m *recordingMetrics) VersionsIndexOutcome(outcome string) {
+func (m *recordingMetrics) VersionsIndexOutcome(upstream, outcome string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.outcomes[outcome]++
+	if m.upstreams == nil {
+		m.upstreams = map[string]int{}
+	}
+	m.upstreams[upstream]++
 }
 
 func TestVersionsIndexMetricsOutcomes(t *testing.T) {
@@ -618,5 +622,142 @@ func decode(t *testing.T, resp *http.Response, dst any) {
 	defer resp.Body.Close()
 	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+}
+
+// --- Multi-upstream ---
+
+// newMultiTestHandler serves two registries from one handler and one cache.
+func newMultiTestHandler(t *testing.T, hosts map[string]string) *Handler {
+	t.Helper()
+	c, err := cache.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	ups := make(map[string]*Upstream, len(hosts))
+	for hostname, base := range hosts {
+		ups[hostname] = NewUpstream(base, "terrastrata-test", 5*time.Second)
+	}
+	h, err := NewHandler(Options{
+		Cache:      c,
+		Upstreams:  ups,
+		Metrics:    NopMetrics{},
+		StagingDir: t.TempDir(),
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h
+}
+
+func multiMux(h *Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	h.Routes(mux)
+	return mux
+}
+
+func getBody(t *testing.T, mux *http.ServeMux, path string) (int, string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	return rec.Code, rec.Body.String()
+}
+
+// Each configured hostname must reach its own registry.
+func TestMultipleUpstreamsRouteByHostname(t *testing.T) {
+	a, b := newFakeRegistry(t), newFakeRegistry(t)
+	mux := multiMux(newMultiTestHandler(t, map[string]string{
+		"registry.terraform.io": a.server.URL,
+		"registry.opentofu.org": b.server.URL,
+	}))
+
+	for _, host := range []string{"registry.terraform.io", "registry.opentofu.org"} {
+		if code, _ := getBody(t, mux, "/"+host+"/hashicorp/null/index.json"); code != http.StatusOK {
+			t.Errorf("%s index.json = %d, want 200", host, code)
+		}
+	}
+	if a.hits.Load() == 0 || b.hits.Load() == 0 {
+		t.Errorf("expected both upstreams to be reached (a=%d b=%d)", a.hits.Load(), b.hits.Load())
+	}
+}
+
+// A hostname that is not configured stays a 404 — the guard against caching one
+// registry's content under another's cache keys.
+func TestUnconfiguredHostnameIsNotFound(t *testing.T) {
+	a := newFakeRegistry(t)
+	mux := multiMux(newMultiTestHandler(t, map[string]string{"registry.terraform.io": a.server.URL}))
+
+	if code, _ := getBody(t, mux, "/registry.opentofu.org/hashicorp/null/index.json"); code != http.StatusNotFound {
+		t.Errorf("unconfigured hostname = %d, want 404", code)
+	}
+	if n := a.hits.Load(); n != 0 {
+		t.Errorf("unconfigured hostname reached an upstream %d times", n)
+	}
+}
+
+// The property that makes a shared cache safe: the same namespace/type on two
+// hostnames must serve each registry's own bytes, never the other's.
+func TestUpstreamsDoNotAliasEachOther(t *testing.T) {
+	a, b := newFakeRegistry(t), newFakeRegistry(t)
+	// Give the two registries distinguishable content for the same coordinate.
+	b.zipBytes = []byte("PK\x03\x04 opentofu's very different payload")
+	sum := sha256.Sum256(b.zipBytes)
+	b.zipSum = hex.EncodeToString(sum[:])
+	b.servedShasum = b.zipSum
+
+	mux := multiMux(newMultiTestHandler(t, map[string]string{
+		"registry.terraform.io": a.server.URL,
+		"registry.opentofu.org": b.server.URL,
+	}))
+
+	const zipPath = "/hashicorp/null/3.2.0/download/linux_amd64/terraform-provider-null_3.2.0_linux_amd64.zip"
+
+	codeA, bodyA := getBody(t, mux, "/registry.terraform.io"+zipPath)
+	codeB, bodyB := getBody(t, mux, "/registry.opentofu.org"+zipPath)
+	if codeA != http.StatusOK || codeB != http.StatusOK {
+		t.Fatalf("zip status: terraform=%d opentofu=%d, want 200 each", codeA, codeB)
+	}
+
+	if bodyA != string(a.zipBytes) {
+		t.Errorf("registry.terraform.io served %q, want its own payload", bodyA)
+	}
+	if bodyB != string(b.zipBytes) {
+		t.Errorf("registry.opentofu.org served %q, want its own payload", bodyB)
+	}
+	if bodyA == bodyB {
+		t.Fatal("both hostnames served identical bytes: the cache is aliasing across upstreams")
+	}
+
+	// And on the warm path too, where a shared cache key would show up as a hit
+	// returning the wrong registry's bytes.
+	if _, warm := getBody(t, mux, "/registry.opentofu.org"+zipPath); warm != string(b.zipBytes) {
+		t.Error("cached read served the wrong upstream's bytes")
+	}
+}
+
+// The complement of TestHostnameMatchIsCaseInsensitive: a mixed-case hostname in
+// the *configuration* must still match a lowercase request, since NewHandler
+// normalizes the map keys.
+func TestMixedCaseConfiguredHostnameMatches(t *testing.T) {
+	a := newFakeRegistry(t)
+	mux := multiMux(newMultiTestHandler(t, map[string]string{"Registry.Terraform.IO": a.server.URL}))
+
+	if code, _ := getBody(t, mux, "/registry.terraform.io/hashicorp/null/index.json"); code != http.StatusOK {
+		t.Errorf("lowercase request against mixed-case config = %d, want 200", code)
+	}
+}
+
+func TestNewHandlerRejectsEmptyUpstreams(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := NewHandler(Options{StagingDir: t.TempDir(), Logger: log}); err == nil {
+		t.Error("expected an error with no upstreams configured, got nil")
+	}
+	if _, err := NewHandler(Options{
+		Upstreams:  map[string]*Upstream{"registry.terraform.io": nil},
+		StagingDir: t.TempDir(),
+		Logger:     log,
+	}); err == nil {
+		t.Error("expected an error for a nil upstream, got nil")
 	}
 }

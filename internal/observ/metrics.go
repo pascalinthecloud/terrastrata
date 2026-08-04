@@ -60,8 +60,8 @@ func NewMetrics() *Metrics {
 		}, []string{"route"}),
 		versionsIndex: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "terrastrata_versions_index_total",
-			Help: "Versions-index requests by freshness outcome (fresh, revalidated, coalesced, stale, error).",
-		}, []string{"outcome"}),
+			Help: "Versions-index requests by upstream registry and freshness outcome (fresh, revalidated, coalesced, stale, error).",
+		}, []string{"upstream", "outcome"}),
 		moduleDowns: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "terrastrata_module_downloads_total",
 			Help: "Module download resolutions by outcome (cached, bypass, error).",
@@ -102,9 +102,10 @@ func (m *Metrics) CacheLookup(resource string, hit bool) {
 	m.cacheLookups.WithLabelValues(resource, result).Inc()
 }
 
-// VersionsIndexOutcome implements mirror.Metrics.
-func (m *Metrics) VersionsIndexOutcome(outcome string) {
-	m.versionsIndex.WithLabelValues(outcome).Inc()
+// VersionsIndexOutcome implements mirror.Metrics. Cardinality is bounded by the
+// configured upstreams, so the hostname is safe as a label.
+func (m *Metrics) VersionsIndexOutcome(upstream, outcome string) {
+	m.versionsIndex.WithLabelValues(upstream, outcome).Inc()
 }
 
 // ModuleDownload implements modules.Metrics.
