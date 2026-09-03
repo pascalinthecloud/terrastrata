@@ -112,7 +112,11 @@ func run() error {
 			Metrics:     metrics,
 			StagingDir:  filepath.Join(cfg.CacheDir, ".staging"),
 			VersionsTTL: cfg.IndexTTL,
-			Logger:      logger,
+			// The archive route cannot carry a bearer header (Terraform sends
+			// none on the X-Terraform-Get fetch), so the token is used to sign
+			// the archive URLs the download endpoint hands out instead.
+			AuthToken: cfg.AuthToken,
+			Logger:    logger,
 		})
 		if err != nil {
 			return err
@@ -189,11 +193,13 @@ func buildServer(cfg config.Config, h *mirror.Handler, mods *modules.Handler, me
 		// Service discovery must be unauthenticated: it is the first request a
 		// client makes, before it looks up any credentials for the host.
 		root.HandleFunc("GET /.well-known/terraform.json", mods.Discovery)
-		// The archive endpoint must also stay unauthenticated. Terraform sends
-		// registry credentials only to registry endpoints; the go-getter fetch of
-		// X-Terraform-Get that follows carries no Authorization header, so putting
-		// the archive behind auth would break terraform init whenever AUTH_TOKEN
-		// is set. The exact pattern takes precedence over the /v1/modules/
+		// The archive endpoint sits outside the bearer middleware. Terraform
+		// sends registry credentials only to registry endpoints; the go-getter
+		// fetch of X-Terraform-Get that follows carries no Authorization header,
+		// so putting the archive behind the header check would break terraform
+		// init whenever AUTH_TOKEN is set. The handler authorizes it by the
+		// signature the (authenticated) download endpoint puts in the URL
+		// instead. The exact pattern takes precedence over the /v1/modules/
 		// subtree below.
 		root.HandleFunc(modules.ArchivePattern, mods.ArchiveHandler())
 		root.Handle("/v1/modules/", httpx.BearerAuth(cfg.AuthToken)(moduleMux))

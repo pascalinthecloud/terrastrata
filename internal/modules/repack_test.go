@@ -14,6 +14,7 @@ type tarEntry struct {
 	name     string
 	body     string
 	typeflag byte
+	linkname string
 }
 
 func makeTarGz(t *testing.T, entries []tarEntry) []byte {
@@ -26,8 +27,10 @@ func makeTarGz(t *testing.T, entries []tarEntry) []byte {
 		if flag == 0 {
 			flag = tar.TypeReg
 		}
-		hdr := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: flag}
+		hdr := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: flag, Linkname: e.linkname}
 		switch flag {
+		case tar.TypeSymlink, tar.TypeLink:
+			hdr.Size = 0
 		case tar.TypeDir:
 			hdr.Size = 0
 			hdr.Mode = 0o755
@@ -62,6 +65,14 @@ func makeTarGz(t *testing.T, entries []tarEntry) []byte {
 // the names of every entry in order.
 func readTarGz(t *testing.T, data []byte) (map[string]string, []string) {
 	t.Helper()
+	files, names, _ := readTarGzLinks(t, data)
+	return files, names
+}
+
+// readTarGzLinks additionally returns a name -> target map of the link entries,
+// so tests can assert how a symlink or hard link survived the repack.
+func readTarGzLinks(t *testing.T, data []byte) (map[string]string, []string, map[string]string) {
+	t.Helper()
 	gr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
@@ -69,6 +80,7 @@ func readTarGz(t *testing.T, data []byte) (map[string]string, []string) {
 	defer func() { _ = gr.Close() }()
 
 	files := map[string]string{}
+	links := map[string]string{}
 	var names []string
 	tr := tar.NewReader(gr)
 	for {
@@ -80,6 +92,9 @@ func readTarGz(t *testing.T, data []byte) (map[string]string, []string) {
 			t.Fatalf("tar.Next: %v", err)
 		}
 		names = append(names, hdr.Name)
+		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
+			links[hdr.Name] = hdr.Linkname
+		}
 		if hdr.Typeflag == tar.TypeReg {
 			body, err := io.ReadAll(tr)
 			if err != nil {
@@ -88,7 +103,7 @@ func readTarGz(t *testing.T, data []byte) (map[string]string, []string) {
 			files[hdr.Name] = string(body)
 		}
 	}
-	return files, names
+	return files, names, links
 }
 
 // This is the shape GitHub's codeload actually returns: a PAX global header
@@ -157,6 +172,38 @@ func TestRepackStripRootRejectsBadArchives(t *testing.T) {
 			entries: nil,
 			want:    "empty",
 		},
+		{
+			name: "symlink escaping the root",
+			entries: []tarEntry{
+				{name: "repo-abc/main.tf", body: "x"},
+				{name: "repo-abc/leak.tf", typeflag: tar.TypeSymlink, linkname: "../../../../etc/passwd"},
+			},
+			want: "escapes the root",
+		},
+		{
+			name: "symlink to an absolute path",
+			entries: []tarEntry{
+				{name: "repo-abc/main.tf", body: "x"},
+				{name: "repo-abc/leak.tf", typeflag: tar.TypeSymlink, linkname: "/etc/passwd"},
+			},
+			want: "absolute path",
+		},
+		{
+			name: "symlink escaping from a subdirectory",
+			entries: []tarEntry{
+				{name: "repo-abc/modules/vpc/main.tf", body: "x"},
+				{name: "repo-abc/modules/vpc/leak.tf", typeflag: tar.TypeSymlink, linkname: "../../../../../secrets"},
+			},
+			want: "escapes the root",
+		},
+		{
+			name: "hard link outside the archive root",
+			entries: []tarEntry{
+				{name: "repo-abc/main.tf", body: "x"},
+				{name: "repo-abc/leak.tf", typeflag: tar.TypeLink, linkname: "other-repo/secret.tf"},
+			},
+			want: "outside the archive root",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,6 +215,32 @@ func TestRepackStripRootRejectsBadArchives(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Links that stay inside the tree are legitimate — git tracks symlinks — so they
+// survive, with a hard link's root-relative target stripped the same way names
+// are. Dropping them would corrupt the module; leaving a hard link's target
+// prefixed would point it at a path the repacked archive no longer contains.
+func TestRepackStripRootKeepsInTreeLinks(t *testing.T) {
+	in := makeTarGz(t, []tarEntry{
+		{name: "repo-abc123/main.tf", body: "# root\n"},
+		{name: "repo-abc123/modules/", typeflag: tar.TypeDir},
+		{name: "repo-abc123/modules/link.tf", typeflag: tar.TypeSymlink, linkname: "../main.tf"},
+		{name: "repo-abc123/hard.tf", typeflag: tar.TypeLink, linkname: "repo-abc123/main.tf"},
+	})
+
+	var out bytes.Buffer
+	if _, err := repackStripRoot(&out, bytes.NewReader(in)); err != nil {
+		t.Fatalf("repackStripRoot: %v", err)
+	}
+
+	_, _, links := readTarGzLinks(t, out.Bytes())
+	if got, want := links["modules/link.tf"], "../main.tf"; got != want {
+		t.Errorf("symlink target = %q, want %q (kept verbatim)", got, want)
+	}
+	if got, want := links["hard.tf"], "main.tf"; got != want {
+		t.Errorf("hard link target = %q, want %q (wrapper stripped)", got, want)
 	}
 }
 

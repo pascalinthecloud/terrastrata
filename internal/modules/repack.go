@@ -80,6 +80,15 @@ func repackStripRoot(w io.Writer, r io.Reader) (int64, error) {
 			continue
 		}
 
+		// Link entries carry a second path — the target — which must be checked
+		// too. Terraform extracts what we serve, and the module protocol
+		// publishes no checksum, so a link pointing out of the tree is the one
+		// way a malicious module could reach files outside its own directory on
+		// the client.
+		if err := stripLinkTarget(hdr, root, rest); err != nil {
+			return 0, err
+		}
+
 		hdr.Name = rest
 		if err := tw.WriteHeader(hdr); err != nil {
 			return 0, fmt.Errorf("modules: write tar header: %w", err)
@@ -101,6 +110,49 @@ func repackStripRoot(w io.Writer, r io.Reader) (int64, error) {
 		return 0, fmt.Errorf("modules: close gzip: %w", err)
 	}
 	return counter.n, nil
+}
+
+// stripLinkTarget validates (and for hard links rewrites) a link entry's
+// target. name is the entry's path with the wrapper directory already removed.
+//
+//   - A symlink target is relative to the link's own directory, and is kept
+//     verbatim as long as it resolves inside the tree.
+//   - A hard link target is relative to the archive root, so it still carries
+//     the wrapper prefix every name was just stripped of, and must be stripped
+//     the same way or it would point at a path this archive no longer contains.
+//
+// Anything resolving outside the tree — or an absolute target — fails the whole
+// repack rather than being silently dropped: a module that ships one is not an
+// archive we want to re-serve as our own.
+func stripLinkTarget(hdr *tar.Header, root, name string) error {
+	switch hdr.Typeflag {
+	case tar.TypeSymlink:
+		target := hdr.Linkname
+		if path.IsAbs(target) {
+			return fmt.Errorf("modules: archive symlink %q targets an absolute path %q", hdr.Name, target)
+		}
+		//nolint:gosec // G305: this *is* the traversal check — the joined path is
+		// only tested for escape, never opened or written.
+		if escapes(path.Join(path.Dir(name), target)) {
+			return fmt.Errorf("modules: archive symlink %q escapes the root (target %q)", hdr.Name, target)
+		}
+	case tar.TypeLink:
+		target := path.Clean(strings.TrimPrefix(hdr.Linkname, "./"))
+		if path.IsAbs(target) || escapes(target) {
+			return fmt.Errorf("modules: archive hard link %q escapes the root (target %q)", hdr.Name, hdr.Linkname)
+		}
+		first, rest, _ := strings.Cut(target, "/")
+		if first != root || rest == "" {
+			return fmt.Errorf("modules: archive hard link %q targets %q outside the archive root", hdr.Name, hdr.Linkname)
+		}
+		hdr.Linkname = rest
+	}
+	return nil
+}
+
+// escapes reports whether a cleaned, root-relative path leaves the tree.
+func escapes(p string) bool {
+	return p == ".." || strings.HasPrefix(p, "../")
 }
 
 // countingWriter counts the bytes written through it.

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Module archive URLs are now signed when `AUTH_TOKEN` is set.** The archive
+  endpoint has to sit outside the bearer middleware — Terraform attaches registry
+  credentials only to registry requests, never to the `X-Terraform-Get` fetch
+  that follows — which left it as the one route `AUTH_TOKEN` did not cover: any
+  caller who could reach the port could pull cached module archives and drive
+  upstream fetches. The (authenticated) download endpoint now mints an archive
+  URL carrying a 15-minute HMAC over the module coordinates, keyed on
+  `AUTH_TOKEN`, and the archive endpoint answers `403` to anything else —
+  checking the signature before it reads the cache or calls upstream. With no
+  token configured nothing changes: URLs are unsigned and the endpoint is open.
+- **The GitHub-tarball repack now validates link targets.** It checked every
+  entry *name* for traversal but passed `symlink`/`hardlink` *targets* through
+  untouched, so a module could ship `main.tf -> ../../../../etc/passwd` and
+  terrastrata would re-serve it as an archive it had examined — with no checksum
+  anywhere on the module path to catch it. Targets escaping the tree, and
+  absolute targets, now fail the repack; in-tree links are kept, with a hard
+  link's target stripped of the wrapper directory like every other path (it
+  previously pointed at a path the repacked archive no longer contained).
+
 ## [0.5.1] - 2026-09-03
 
 ### Added

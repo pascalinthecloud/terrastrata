@@ -96,6 +96,12 @@ type Handler struct {
 	// lower it so the cap can be exercised without moving half a gigabyte.
 	maxArchive int64
 
+	// signer signs and verifies archive URLs when auth is enabled. Nil when no
+	// AUTH_TOKEN is configured, leaving the archive endpoint open (the default
+	// internal-network mode). See sign.go for why the URL rather than a header
+	// carries the authorization.
+	signer *signer
+
 	// now returns the current time; overridable in tests for deterministic TTL.
 	now func() time.Time
 
@@ -111,7 +117,13 @@ type Options struct {
 	StagingDir string
 	// VersionsTTL is the versions-document freshness window; zero disables expiry.
 	VersionsTTL time.Duration
-	Logger      *slog.Logger
+	// AuthToken is the bearer token guarding the registry endpoints. When it is
+	// set, archive URLs minted by the download endpoint are signed with it and
+	// the archive endpoint rejects unsigned requests — the archive route cannot
+	// use the bearer header itself (see ArchivePattern and sign.go). Empty
+	// leaves the archive endpoint unauthenticated, matching auth being off.
+	AuthToken string
+	Logger    *slog.Logger
 }
 
 // NewHandler builds a module Handler, creating the staging directory if needed.
@@ -132,6 +144,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		stagingDir:  opts.StagingDir,
 		versionsTTL: opts.VersionsTTL,
 		maxArchive:  maxArchiveBytes,
+		signer:      newSigner(opts.AuthToken),
 		now:         time.Now,
 		log:         opts.Logger,
 	}, nil
@@ -169,6 +182,10 @@ func (h *Handler) RoutesMeta(mux *http.ServeMux) {
 // break terraform init whenever AUTH_TOKEN is set. Second, module patterns and
 // the provider zip pattern overlap without either being more specific, so Go's
 // ServeMux panics if both are registered on the same mux.
+//
+// Being outside the bearer middleware does not mean unauthorized: when
+// AUTH_TOKEN is set, the handler requires the short-lived signature that the
+// (authenticated) download endpoint puts in the URL. See sign.go.
 const ArchivePattern = "GET /v1/modules/{namespace}/{name}/{system}/{version}/archive"
 
 // coords validates the namespace/name/system triple from the request path.
@@ -293,7 +310,7 @@ func (h *Handler) handleDownload(w http.ResponseWriter, r *http.Request) {
 	get := loc.Bypass
 	outcome := outcomeBypass
 	if get == "" {
-		get = RehostedGet(c, loc.Source)
+		get = h.rehostedGet(c, loc.Source)
 		outcome = outcomeCached
 	}
 	h.metrics.ModuleDownload(outcome)
@@ -350,12 +367,33 @@ func (h *Handler) resolveLocation(ctx context.Context, c Coordinates) (location,
 	return v.(location), "MISS", nil
 }
 
+// rehostedGet builds the X-Terraform-Get value pointing at terrastrata's own
+// archive endpoint, signed when auth is enabled so the (unauthenticated) archive
+// route still only serves clients that came through the authenticated download
+// endpoint.
+func (h *Handler) rehostedGet(c Coordinates, src Source) string {
+	get := RehostedGet(c, src)
+	if h.signer == nil {
+		return get
+	}
+	return get + h.signer.query(c, h.now())
+}
+
 // handleArchive serves the module archive, fetching and caching it on a miss.
 func (h *Handler) handleArchive(w http.ResponseWriter, r *http.Request) {
 	c, err := versionCoords(r)
 	if err != nil {
 		h.fail(w, r, http.StatusBadRequest, err)
 		return
+	}
+	// Authorize before anything else: an unsigned request must not read the
+	// cache or reach upstream.
+	if h.signer != nil {
+		q := r.URL.Query()
+		if err := h.signer.verify(c, q.Get(paramExpiry), q.Get(paramSignature), h.now()); err != nil {
+			h.fail(w, r, http.StatusForbidden, err)
+			return
+		}
 	}
 	key := ArchiveCacheKey(c)
 
