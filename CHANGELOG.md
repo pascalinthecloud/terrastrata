@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A documentation site** (Astro + Starlight) at
+  <https://pascalinthecloud.github.io/terrastrata/>, built and deployed from
+  `docs/` by GitHub Actions. It is now the canonical documentation: getting
+  started, a full configuration and Helm values reference, guides for multiple
+  registries, modules, HA, observability and supply chain, a metrics reference,
+  a troubleshooting page, and worked examples for Azure DevOps, GitHub Actions,
+  MinIO-backed local development and pre-warming. The README is trimmed to an
+  overview, a quick start, and links — it had grown to 494 lines, which is past
+  the point where one file serves a reader well, and duplicating that content in
+  two places would only let it drift.
+- Helm chart (0.5.2): the Artifact Hub `documentation` link points at the site
+  instead of a README anchor.
+
 - **Bills of material on every release.** Each GitHub Release now carries the
   per-platform SPDX SBOM buildkit produces for the image (Go modules plus the
   distroless base) and a CycloneDX 1.6 BOM of the binary's own dependency graph.

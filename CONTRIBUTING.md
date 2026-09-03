@@ -41,7 +41,25 @@ internal/mirror     Network mirror protocol: paths, upstream, translation, HTTP
 internal/httpx      Middleware (request-id, logging, recovery, bearer auth)
 internal/observ     Structured logging and Prometheus metrics
 deploy/             Kubernetes manifests and Helm chart
+docs/               Documentation site (Astro + Starlight), published to Pages
 ```
+
+## Documentation
+
+The site in `docs/` is the canonical documentation; the README is deliberately
+short and points at it. Anything user-facing — a new environment variable, a
+changed default, a new failure mode worth troubleshooting — belongs there in the
+same pull request as the change.
+
+```bash
+cd docs
+npm ci
+npm run dev    # http://localhost:4321/terrastrata
+npm run build  # what CI runs
+```
+
+Pull requests build the site without deploying, so a broken page fails review
+rather than the site. Pushes to `main` that touch `docs/` deploy it.
 
 ## Conventions
 
