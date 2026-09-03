@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ------------------------------------------------------------
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 
 # Build metadata, supplied by `make docker` / CI. DATE may be passed for a
 # reproducible build stamp; if omitted it falls back to the build time.
