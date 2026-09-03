@@ -1,0 +1,38 @@
+---
+title: terrastrata
+description: Pull-through provider cache registry for Terraform and OpenTofu.
+template: splash
+hero:
+  tagline: A pull-through cache between your CI agents and the provider registry, so terraform init stops depending on the internet.
+  actions:
+    - text: Install it
+      link: /terrastrata/start/install/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/pascalinthecloud/terrastrata
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="One instance, both ecosystems">
+    Terraform and OpenTofu speak the same network mirror protocol, so a single
+    deployment mirrors `registry.terraform.io` and `registry.opentofu.org` side
+    by side — each under its own hostname, sharing one cache.
+  </Card>
+  <Card title="Survives the outage you did not cause">
+    A cached version list is served stale when the upstream registry is
+    unreachable, and provider archives are immutable once cached. A registry
+    incident stops being your incident.
+  </Card>
+  <Card title="No thundering herd">
+    Fifty agents starting at once on a cold provider produce exactly one
+    upstream fetch. The rest wait on it and are then served from the cache.
+  </Card>
+  <Card title="Verified before it is cached">
+    Every provider archive is checked against the registry-published SHA-256
+    before it enters the cache. A mismatch is refused, not stored.
+  </Card>
+</CardGrid>
