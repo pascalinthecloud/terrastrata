@@ -1,7 +1,8 @@
 name: Release
 
 # Publishes a multi-arch container image to GHCR on every version tag, with an
-# SBOM, build provenance, and a keyless cosign signature. Tag a release with:
+# SBOM, build provenance, and a keyless cosign signature, and attaches the bills
+# of material to the GitHub Release as downloadable files. Tag a release with:
 #   git tag v0.2.0 && git push origin v0.2.0
 #
 # All actions are pinned to full commit SHAs (the tag comment is informative
@@ -81,8 +82,45 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Two bills of material ship with every release:
+      #
+      #   * the SPDX SBOM buildkit already produced per platform, describing what
+      #     is actually inside the pushed image (Go modules plus the distroless
+      #     base). It lives in the registry as an attestation either way — this
+      #     only makes it downloadable without a registry client.
+      #   * a CycloneDX BOM of the binary's own dependency graph, for tooling
+      #     that wants a source-level view. Build constraints match the
+      #     Dockerfile so module selection is the same.
+      - name: Assemble the release SBOMs
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p sbom
+          ref="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          for platform in linux/amd64 linux/arm64; do
+            out="sbom/terrastrata-$(echo "$platform" | tr '/' '-').spdx.json"
+            docker buildx imagetools inspect "$ref" \
+              --format "{{ json (index .SBOM \"$platform\").SPDX }}" > "$out"
+            # A format change upstream would otherwise ship a hollow BOM quietly.
+            test "$(jq '.packages | length' "$out")" -gt 0 || {
+              echo "no SPDX packages extracted for $platform" >&2; exit 1; }
+          done
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0 \
+            app -licenses -json -main ./cmd/terrastrata -output sbom/terrastrata.cdx.json .
+          test "$(jq '.components | length' sbom/terrastrata.cdx.json)" -gt 0 || {
+            echo "CycloneDX BOM lists no components" >&2; exit 1; }
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          files: |
+            sbom/terrastrata.cdx.json
+            sbom/terrastrata-linux-amd64.spdx.json
+            sbom/terrastrata-linux-arm64.spdx.json
