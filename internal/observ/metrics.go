@@ -37,6 +37,7 @@ type Metrics struct {
 	cacheSize     prometheus.Gauge
 	evictions     prometheus.Counter
 	evictedBytes  prometheus.Counter
+	integrityFail prometheus.Counter
 }
 
 // NewMetrics creates and registers terrastrata's collectors on a private
@@ -82,11 +83,15 @@ func NewMetrics() *Metrics {
 			Name: "terrastrata_cache_evicted_bytes_total",
 			Help: "Cache bytes evicted to stay within the size budget.",
 		}),
+		integrityFail: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "terrastrata_cache_integrity_failures_total",
+			Help: "Objects from the durable cache layer rejected because their digest did not match the published one.",
+		}),
 	}
 	reg.MustRegister(
 		m.cacheLookups, m.httpRequests, m.httpDuration, m.versionsIndex,
 		m.moduleDowns, m.prewarm,
-		m.cacheSize, m.evictions, m.evictedBytes,
+		m.cacheSize, m.evictions, m.evictedBytes, m.integrityFail,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
@@ -131,6 +136,13 @@ func (m *Metrics) CacheSize(bytes int64) {
 func (m *Metrics) Evicted(files int, bytes int64) {
 	m.evictions.Add(float64(files))
 	m.evictedBytes.Add(float64(bytes))
+}
+
+// IntegrityFailure implements cache.IntegrityMetrics. Any non-zero value here is
+// worth investigating: it means shared storage held an archive that does not
+// match the digest terrastrata publishes for it.
+func (m *Metrics) IntegrityFailure() {
+	m.integrityFail.Inc()
 }
 
 // Handler returns the /metrics HTTP handler scoped to terrastrata's registry.

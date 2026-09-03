@@ -228,3 +228,116 @@ func TestLayeredPutWithoutDurable(t *testing.T) {
 		t.Fatalf("Get hit=%v err=%v", hit, err)
 	}
 }
+
+// memCache does not implement deleter, so a rejected object stays in the local
+// layer unless the local layer can drop it. deletingMemCache is the stand-in for
+// a local layer that can (the real one is *Local).
+type deletingMemCache struct {
+	*memCache
+	deleted []string
+}
+
+func (d *deletingMemCache) Delete(_ context.Context, key string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.data, key)
+	d.deleted = append(d.deleted, key)
+	return nil
+}
+
+type countingIntegrityMetrics struct{ failures int }
+
+func (c *countingIntegrityMetrics) IntegrityFailure() { c.failures++ }
+
+func TestLayeredVerifiesDurableContent(t *testing.T) {
+	local := newMemCache()
+	durable := newMemCache()
+	var seen []string
+	c := NewLayered(local, durable, discardLogger(), WithDurableVerifier(
+		func(_ context.Context, key string, r io.Reader) error {
+			body, err := io.ReadAll(r)
+			if err != nil {
+				return err
+			}
+			seen = append(seen, key+":"+string(body))
+			return nil
+		}))
+
+	if err := durable.Put(context.Background(), "k", bytes.NewReader([]byte("trustworthy"))); err != nil {
+		t.Fatalf("durable Put: %v", err)
+	}
+	rc, hit, err := c.Get(context.Background(), "k")
+	if err != nil || !hit {
+		t.Fatalf("Get = hit %v, err %v; want a hit", hit, err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	// The verifier reads its own copy, so the caller still gets the object whole.
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != "trustworthy" {
+		t.Errorf("body = %q, want %q", body, "trustworthy")
+	}
+	if len(seen) != 1 || seen[0] != "k:trustworthy" {
+		t.Errorf("verifier saw %v, want one call with the durable bytes", seen)
+	}
+}
+
+// A durable object that fails verification must not reach the caller, and must
+// not be left in the local layer where the next request would serve it as a
+// trusted local hit. Reporting a miss is what makes the handler refetch from
+// upstream and repair both layers.
+func TestLayeredRejectsUnverifiedDurableContent(t *testing.T) {
+	local := &deletingMemCache{memCache: newMemCache()}
+	durable := newMemCache()
+	metrics := &countingIntegrityMetrics{}
+	c := NewLayered(local, durable, discardLogger(),
+		WithDurableVerifier(func(context.Context, string, io.Reader) error {
+			return errors.New("digest mismatch")
+		}),
+		WithIntegrityMetrics(metrics))
+
+	if err := durable.Put(context.Background(), "k", bytes.NewReader([]byte("tampered"))); err != nil {
+		t.Fatalf("durable Put: %v", err)
+	}
+
+	rc, hit, err := c.Get(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Get error = %v, want the rejection reported as a miss", err)
+	}
+	if hit {
+		_ = rc.Close()
+		t.Fatal("unverified durable content was served")
+	}
+	if local.has("k") {
+		t.Error("unverified object was left in the local layer")
+	}
+	if len(local.deleted) != 1 || local.deleted[0] != "k" {
+		t.Errorf("deleted = %v, want [k]", local.deleted)
+	}
+	if metrics.failures != 1 {
+		t.Errorf("integrity failures = %d, want 1", metrics.failures)
+	}
+	// The durable copy is left alone: repairing it is the writer's job, and a
+	// replica should not delete objects other replicas may be mid-read on.
+	if !durable.has("k") {
+		t.Error("durable object was deleted; that is not this layer's call")
+	}
+}
+
+// Without a verifier, durable content is trusted as before.
+func TestLayeredWithoutVerifierTrustsDurable(t *testing.T) {
+	local := newMemCache()
+	durable := newMemCache()
+	c := NewLayered(local, durable, discardLogger())
+	if err := durable.Put(context.Background(), "k", bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatalf("durable Put: %v", err)
+	}
+	rc, hit, err := c.Get(context.Background(), "k")
+	if err != nil || !hit {
+		t.Fatalf("Get = hit %v, err %v; want a hit", hit, err)
+	}
+	_ = rc.Close()
+}

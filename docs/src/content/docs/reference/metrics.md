@@ -55,9 +55,18 @@ cached — clients are going to the original source. See
 | `terrastrata_cache_size_bytes` | Local cache size, measured on each evictor sweep (every 5 minutes) |
 | `terrastrata_cache_evictions_total` | Files evicted to stay inside the budget |
 | `terrastrata_cache_evicted_bytes_total` | Bytes evicted |
+| `terrastrata_cache_integrity_failures_total` | Archives from the durable layer rejected because their digest did not match the published one |
 
 `cache_size_bytes` only updates when eviction is enabled (`CACHE_MAX_BYTES`),
 since that is what schedules the sweep that measures it.
+
+:::tip[Worth an alert]
+`cache_integrity_failures_total` should be flat at zero. Anything else means
+shared storage held a provider archive that does not match the digest the registry
+publishes for it — corruption at best, tampering at worst. The request itself
+succeeded (the archive was refetched and the cache repaired), so nothing else will
+tell you.
+:::
 
 ## Scraping
 

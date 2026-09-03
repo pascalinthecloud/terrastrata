@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Provider archives read back from the S3 layer are re-verified before being
+  served.** That layer is shared between replicas, outlives all of them, and is
+  writable by anything holding the bucket credentials — the one cache input
+  terrastrata did not produce and check itself. An archive arriving from it is now
+  re-hashed and compared against the registry's published digest, fetched over the
+  network so it is beyond the reach of bucket credentials, which catches even an
+  attacker who rewrote the archive and the cached archives index together. When
+  the registry is unreachable the `zh:` digest in our own cached index is used
+  instead: weaker, but it still catches single-object tampering and corruption, and
+  it keeps the mirror working through an outage. An object neither source can
+  vouch for is served rather than refused.
+
+  A rejection is reported as a **cache miss** rather than an error, so the archive
+  is refetched from upstream and both layers are repaired — the client receives
+  correct bytes and never sees a failure. `terrastrata_cache_integrity_failures_total`
+  counts rejections and should be flat at zero. The check runs only on the first
+  read of an object from the durable layer, so it costs one hash per object per
+  replica, not one per request.
+
 ### Added
 
 - A logo (`docs/public/logo.svg`, three strata for the cache layers a request
