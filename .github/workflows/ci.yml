@@ -110,6 +110,10 @@ jobs:
   e2e:
     name: E2E (terraform init)
     runs-on: ubuntu-latest
+    # A throwaway token for the auth half of this job. It guards a container that
+    # lives for the length of one CI run and is reachable only on localhost.
+    env:
+      E2E_AUTH_TOKEN: e2e-token-not-a-secret
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -128,15 +132,26 @@ jobs:
         run: |
           # Terraform rejects a module registry hostname without a dot, so the
           # module half of this job addresses the same server as mirror.test.
-          echo "127.0.0.1 mirror.test" | sudo tee -a /etc/hosts >/dev/null
+          echo "127.0.0.1 mirror.test mirror-auth.test" | sudo tee -a /etc/hosts >/dev/null
           docker run -d --name terrastrata --network host \
             -e MODULES_ENABLED=true \
             -e UPSTREAM_BASE="https://registry.terraform.io,https://registry.opentofu.org" \
             terrastrata:e2e
+          # A second instance with auth on, for the module-archive signature
+          # path: the archive endpoint cannot take a bearer header (Terraform
+          # sends none on the X-Terraform-Get fetch), so it is authorized by the
+          # signature the download endpoint mints. Only a real client proves that
+          # chain holds. Auth stays off on the first instance because Terraform's
+          # network_mirror client sends no credentials at all.
+          docker run -d --name terrastrata-auth --network host \
+            -e LISTEN_ADDR=:8081 \
+            -e MODULES_ENABLED=true \
+            -e AUTH_TOKEN="$E2E_AUTH_TOKEN" \
+            terrastrata:e2e
           mkdir tls && cd tls
           openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
             -days 2 -subj "/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,DNS:mirror.test,IP:127.0.0.1"
+            -addext "subjectAltName=DNS:localhost,DNS:mirror.test,DNS:mirror-auth.test,IP:127.0.0.1"
           cat > nginx.conf <<'EOF'
           events {}
           http {
@@ -148,17 +163,29 @@ jobs:
                 proxy_pass http://127.0.0.1:8080;
               }
             }
+            server {
+              listen 8444 ssl;
+              ssl_certificate /tls/cert.pem;
+              ssl_certificate_key /tls/key.pem;
+              location / {
+                proxy_pass http://127.0.0.1:8081;
+              }
+            }
           }
           EOF
           docker run -d --name tls-proxy --network host \
             -v "$PWD:/tls:ro" -v "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" \
             nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
           for i in $(seq 1 30); do
-            curl -fs --cacert cert.pem https://localhost:8443/health >/dev/null && exit 0
+            if curl -fs --cacert cert.pem https://localhost:8443/health >/dev/null \
+               && curl -fs --cacert cert.pem https://localhost:8444/health >/dev/null; then
+              exit 0
+            fi
             sleep 1
           done
           echo "mirror did not become healthy" >&2
           docker logs terrastrata >&2
+          docker logs terrastrata-auth >&2
           docker logs tls-proxy >&2
           exit 1
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
@@ -325,10 +352,66 @@ jobs:
             | grep 'terrastrata_module_downloads_total{outcome="bypass"}' \
             && { echo "a module download bypassed the cache" >&2; exit 1; }
           exit 0
+      # The authenticated module path, end to end. Terraform sends the token
+      # from its credentials block to the registry endpoints but never to the
+      # X-Terraform-Get fetch that follows, so this init only succeeds if the
+      # signed archive URL is accepted without a header — the exact chain that
+      # unit tests can only approximate.
+      - name: terraform init a module through the authenticated registry
+        env:
+          SSL_CERT_FILE: ${{ github.workspace }}/tls/cert.pem
+        run: |
+          export TF_CLI_CONFIG_FILE=$PWD/auth.tfrc
+          cat > auth.tfrc <<EOF
+          credentials "mirror-auth.test:8444" {
+            token = "$E2E_AUTH_TOKEN"
+          }
+          EOF
+          mkdir mod-auth
+          cat > mod-auth/main.tf <<'EOF'
+          module "regions" {
+            source  = "mirror-auth.test:8444/claranet/regions/azurerm"
+            version = "8.0.6"
+          }
+          EOF
+          terraform -chdir=mod-auth init -input=false -no-color
+      - name: Assert the archive endpoint only serves signed URLs
+        run: |
+          base=https://mirror-auth.test:8444/v1/modules/claranet/regions/azurerm
+          code() { curl -s --cacert tls/cert.pem -o /dev/null -w '%{http_code}' "$@"; }
+
+          # Registry endpoints stay behind the bearer header.
+          test "$(code "$base/versions")" = 401 || {
+            echo "versions endpoint answered without a token" >&2; exit 1; }
+
+          # The archive is cached by now (the init above warmed it), so an
+          # unsigned request is exactly the case that would otherwise hand module
+          # source to an unauthenticated caller.
+          test "$(code "$base/8.0.6/archive?archive=tar.gz")" = 403 || {
+            echo "unsigned archive request was not rejected" >&2; exit 1; }
+
+          # Mint a URL the way Terraform does, and check it works — then that
+          # tampering with the signature does not.
+          get=$(curl -fs --cacert tls/cert.pem -D - -o /dev/null \
+                  -H "Authorization: Bearer $E2E_AUTH_TOKEN" \
+                  "$base/8.0.6/download" \
+                | tr -d '\r' | awk 'tolower($1) == "x-terraform-get:" {print $2}')
+          echo "X-Terraform-Get: $get"
+          case "$get" in
+            *sig=*exp=*|*exp=*sig=*) ;;
+            *) echo "archive URL carries no signature" >&2; exit 1 ;;
+          esac
+          # Strip the "//*" subdir the way go-getter does before fetching.
+          signed="https://mirror-auth.test:8444$(echo "$get" | sed 's|//\*||')"
+          test "$(code "$signed")" = 200 || {
+            echo "signed archive request was rejected: $signed" >&2; exit 1; }
+          test "$(code "${signed}0")" = 403 || {
+            echo "tampered signature was accepted" >&2; exit 1; }
       - name: Container logs
         if: failure()
         run: |
           docker logs terrastrata || true
+          docker logs terrastrata-auth || true
           docker logs tls-proxy || true
 
   docker:
