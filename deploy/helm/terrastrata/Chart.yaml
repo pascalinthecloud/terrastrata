@@ -5,7 +5,7 @@ type: application
 # Chart version; bump on chart changes.
 version: 0.5.3
 # Application version; tracks the terrastrata release.
-appVersion: "0.5.2"
+appVersion: "0.5.3"
 home: https://pascalinthecloud.github.io/terrastrata/
 # Served by the docs site (docs/public/logo.svg); Artifact Hub renders a
 # placeholder without it.
@@ -38,7 +38,7 @@ annotations:
       url: https://github.com/pascalinthecloud/terrastrata/blob/main/SECURITY.md
   artifacthub.io/images: |
     - name: terrastrata
-      image: ghcr.io/pascalinthecloud/terrastrata:0.5.2
+      image: ghcr.io/pascalinthecloud/terrastrata:0.5.3
       whitelisted: false
   artifacthub.io/maintainers: |
     - name: Pascal Toepke

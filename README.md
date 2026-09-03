@@ -51,7 +51,7 @@ Install with Helm:
 
 ```bash
 helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata \
-  --version 0.5.2 \
+  --version 0.5.3 \
   --namespace tf-mirror --create-namespace
 ```
 
@@ -95,7 +95,7 @@ and **[Point your clients at it](https://pascalinthecloud.github.io/terrastrata/
 ## Container images
 
 ```
-ghcr.io/pascalinthecloud/terrastrata:0.5.2     # exact version
+ghcr.io/pascalinthecloud/terrastrata:0.5.3     # exact version
 ghcr.io/pascalinthecloud/terrastrata:0.5       # major.minor
 ghcr.io/pascalinthecloud/terrastrata:sha-<sha> # by commit
 ```

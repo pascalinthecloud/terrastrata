@@ -68,7 +68,7 @@ docker run -d --name terrastrata -p 8080:8080 \
   -e S3_ENDPOINT=http://host.docker.internal:9000 \
   -e S3_ACCESS_KEY=minio -e S3_SECRET_KEY=minio123 \
   -e LOG_LEVEL=debug \
-  ghcr.io/pascalinthecloud/terrastrata:0.5.2
+  ghcr.io/pascalinthecloud/terrastrata:0.5.3
 ```
 
 `deploy/local/` has a fuller version of this with Prometheus, Grafana, and a TLS
