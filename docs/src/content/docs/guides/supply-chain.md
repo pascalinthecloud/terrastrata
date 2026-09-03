@@ -12,7 +12,7 @@ built with provenance, and signed with cosign (keyless, via Sigstore):
 cosign verify \
   --certificate-identity-regexp 'https://github.com/pascalinthecloud/terrastrata/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/pascalinthecloud/terrastrata:0.5.1
+  ghcr.io/pascalinthecloud/terrastrata:0.5.2
 ```
 
 The Helm chart published to `oci://ghcr.io/pascalinthecloud/charts/terrastrata` is
@@ -33,7 +33,7 @@ registry as an attestation — the release assets are a copy you can download
 without a registry client. To read them straight from the registry instead:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/pascalinthecloud/terrastrata:0.5.1 \
+docker buildx imagetools inspect ghcr.io/pascalinthecloud/terrastrata:0.5.2 \
   --format '{{ json (index .SBOM "linux/amd64").SPDX }}'
 ```
 

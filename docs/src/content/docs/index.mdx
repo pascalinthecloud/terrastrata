@@ -2,6 +2,11 @@
 title: terrastrata
 description: Pull-through provider cache registry for Terraform and OpenTofu.
 template: splash
+# Starlight appends the site title, so a page called "terrastrata" would render as
+# "terrastrata | terrastrata" in the tab. Override the tag outright.
+head:
+  - tag: title
+    content: terrastrata — pull-through provider cache for Terraform and OpenTofu
 hero:
   tagline: A pull-through cache between your CI agents and the provider registry, so terraform init stops depending on the internet.
   actions:

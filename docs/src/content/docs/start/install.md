@@ -10,7 +10,7 @@ image are both published to GHCR and cosign-signed.
 
 ```bash
 helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata \
-  --version 0.5.1 \
+  --version 0.5.2 \
   --namespace tf-mirror --create-namespace
 ```
 
@@ -56,7 +56,7 @@ Both artifacts are signed with cosign (keyless, via Sigstore):
 cosign verify \
   --certificate-identity-regexp 'https://github.com/pascalinthecloud/terrastrata/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/pascalinthecloud/terrastrata:0.5.1
+  ghcr.io/pascalinthecloud/terrastrata:0.5.2
 ```
 
 Releases also ship a bill of materials for exactly what is inside the image — see
