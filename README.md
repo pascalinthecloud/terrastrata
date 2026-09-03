@@ -217,6 +217,45 @@ git tag v0.5.1 && git push origin v0.5.1
 # the Release workflow builds, pushes, signs, and drafts the GitHub release
 ```
 
+## Bill of materials
+
+Every release attaches its bills of material to the GitHub Release, so you can
+answer "what is in this thing" without a registry client:
+
+| File | Format | Describes |
+|---|---|---|
+| `terrastrata-linux-amd64.spdx.json` | SPDX 2.3 | everything inside the pushed image for that platform — Go modules plus the distroless base |
+| `terrastrata-linux-arm64.spdx.json` | SPDX 2.3 | the same, for arm64 |
+| `terrastrata.cdx.json` | CycloneDX 1.6 | the binary's own dependency graph, licences where detectable |
+
+The SPDX documents are the same ones buildkit produces at build time and keeps in
+the registry as an attestation — the release assets are just a copy you can
+download. To read them straight from the registry instead:
+
+```bash
+docker buildx imagetools inspect ghcr.io/pascalinthecloud/terrastrata:0.5.1 \
+  --format '{{ json (index .SBOM "linux/amd64").SPDX }}'
+```
+
+CI also uploads a CycloneDX SBOM as a build artifact on every run, so a
+dependency change is visible per commit and not only per release.
+
+## Dependency scanning
+
+Four checks run on every pull request, each answering a different question:
+
+| Check | Scope | Question |
+|---|---|---|
+| `govulncheck` | Go source | is a known vulnerability **reachable** from our code? |
+| `osv-scanner` | `go.mod` | is any dependency **version** we depend on affected, reachable or not? |
+| Dependency review | the PR's diff | does this PR *introduce* a high-severity advisory or a copyleft licence? |
+| Trivy | the built image | anything vulnerable in the image, including the base layer? |
+
+`govulncheck` is call-graph aware and therefore quiet enough to gate on;
+`osv-scanner` deliberately is not, because a vulnerable module sitting unused in
+the graph is still something a consumer of the SBOM will ask about. Dependabot
+opens the update PRs (Go modules, GitHub Actions, and the base image, weekly).
+
 ---
 
 ## Cache structure
