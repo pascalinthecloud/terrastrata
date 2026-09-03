@@ -26,7 +26,7 @@ Every GitHub Release attaches:
 |---|---|---|
 | `terrastrata-linux-amd64.spdx.json` | SPDX 2.3 | everything inside the pushed image for that platform — Go modules plus the distroless base |
 | `terrastrata-linux-arm64.spdx.json` | SPDX 2.3 | the same, for arm64 |
-| `terrastrata.cdx.json` | CycloneDX 1.6 | the binary's own dependency graph, licences where detectable |
+| `terrastrata.cdx.json` | CycloneDX 1.6 | the binary's own dependency graph, with a detected licence for every component |
 
 The SPDX documents are the ones buildkit produced at build time and keeps in the
 registry as an attestation — the release assets are a copy you can download
@@ -35,6 +35,15 @@ without a registry client. To read them straight from the registry instead:
 ```bash
 docker buildx imagetools inspect ghcr.io/pascalinthecloud/terrastrata:0.5.2 \
   --format '{{ json (index .SBOM "linux/amd64").SPDX }}'
+```
+
+Licences in the CycloneDX document are *detected* rather than declared, so they
+live under `components[].evidence.licenses` as CycloneDX intends — not
+`components[].licenses`, which stays empty. Reading the wrong field makes the BOM
+look licence-free:
+
+```bash
+jq -r '.components[] | "\(.name) \(.evidence.licenses[0].license.id)"' terrastrata.cdx.json
 ```
 
 CI also uploads a CycloneDX SBOM as a build artifact on every run, so a dependency

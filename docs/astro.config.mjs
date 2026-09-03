@@ -10,6 +10,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "terrastrata",
+      favicon: "/logo.svg",
       description:
         "Pull-through provider cache registry for Terraform and OpenTofu.",
       social: [
