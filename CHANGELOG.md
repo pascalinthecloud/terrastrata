@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The E2E job now covers the module path **with `AUTH_TOKEN` set**: a second
+  terrastrata instance runs with auth on, and a real `terraform init` resolves a
+  module through it using a `credentials` block. That init only succeeds if the
+  signed archive URL is accepted without an `Authorization` header — Terraform
+  sends credentials to the registry endpoints but never to the
+  `X-Terraform-Get` fetch — so the whole chain is exercised by a real client
+  rather than approximated. The same step asserts a `401` on an unauthenticated
+  registry endpoint and a `403` on an unsigned or tampered archive request.
+
 ### Security
 
 - **Module archive URLs are now signed when `AUTH_TOKEN` is set.** The archive
