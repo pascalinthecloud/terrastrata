@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A logo (`docs/public/logo.svg`, three strata for the cache layers a request
+  falls through), used as the docs site favicon and — as Helm chart 0.5.3 — as the
+  chart's Artifact Hub `icon`, which previously rendered as a placeholder. The
+  chart's `home` now points at the documentation site.
+
+### Documentation
+
+- The supply-chain page explains that CycloneDX licences are *detected* and
+  therefore live under `components[].evidence.licenses`, not
+  `components[].licenses`. Reading the latter makes the BOM look licence-free when
+  every component is in fact covered.
+
 ## [0.5.2] - 2026-09-03
 
 ### Added
