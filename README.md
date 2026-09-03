@@ -77,7 +77,7 @@ Or with Helm, straight from the OCI registry (chart is cosign-signed like the im
 
 ```bash
 helm install tf-mirror oci://ghcr.io/pascalinthecloud/charts/terrastrata \
-  --version 0.5.0 \
+  --version 0.5.1 \
   --namespace tf-mirror --create-namespace
 # With durable S3 cache:
 #   --set s3.enabled=true --set s3.bucket=tf-mirror \
@@ -191,7 +191,7 @@ docker push your-registry/terrastrata:latest
 Released images are published to GitHub Container Registry on every version tag:
 
 ```
-ghcr.io/pascalinthecloud/terrastrata:0.5.0     # exact version
+ghcr.io/pascalinthecloud/terrastrata:0.5.1     # exact version
 ghcr.io/pascalinthecloud/terrastrata:0.5       # major.minor
 ghcr.io/pascalinthecloud/terrastrata:sha-<sha> # by commit
 ```
@@ -204,13 +204,13 @@ with cosign** (keyless / Sigstore) — verify before deploying:
 cosign verify \
   --certificate-identity-regexp 'https://github.com/pascalinthecloud/terrastrata/.github/workflows/release.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/pascalinthecloud/terrastrata:0.5.0
+  ghcr.io/pascalinthecloud/terrastrata:0.5.1
 ```
 
 Pin by digest in production. To cut a release:
 
 ```bash
-git tag v0.5.0 && git push origin v0.5.0
+git tag v0.5.1 && git push origin v0.5.1
 # the Release workflow builds, pushes, signs, and drafts the GitHub release
 ```
 
