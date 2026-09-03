@@ -70,6 +70,19 @@ action is pinned to a full commit SHA rather than a mutable tag.
 
 - **Provider zips** are checked against the registry-published SHA-256 before
   being cached or served; a mismatch or a missing checksum is refused.
+- **Archives read back from S3 are re-verified.** The durable layer is shared,
+  outlives every replica, and is writable by anything holding the bucket
+  credentials, so it is the one cache input terrastrata did not produce itself.
+  An archive arriving from it is re-hashed and compared against the registry's
+  published digest (asked for over the network, so it is beyond the reach of
+  bucket credentials); if the registry is unreachable, against the `zh:` digest in
+  our own cached archives index. A mismatch is reported as a **cache miss**, not an
+  error: the archive is refetched from upstream, both layers are repaired, and the
+  client gets correct bytes without ever seeing a failure.
+  `terrastrata_cache_integrity_failures_total` counts these, and any non-zero
+  value deserves investigation. An object neither source can vouch for is served
+  rather than refused — refusing what cannot be checked would turn a registry
+  outage into an outage here.
 - **Requested filenames** must match what the registry publishes, so a client
   cannot cause an archive to be cached under a name of its choosing.
 - **Module archives** cannot be checksum-verified — the protocol publishes none —

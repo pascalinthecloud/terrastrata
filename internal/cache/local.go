@@ -128,6 +128,21 @@ func (l *Local) Put(_ context.Context, key string, r io.Reader) error {
 	return nil
 }
 
+// Delete removes the object stored under key. A key that is not present is not
+// an error: the caller wanted it gone, and it is. It exists so a caller that
+// finds a cached object untrustworthy can drop it rather than leave it to be
+// served again.
+func (l *Local) Delete(_ context.Context, key string) error {
+	path, err := l.resolve(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cache: delete %q: %w", key, err)
+	}
+	return nil
+}
+
 // syncDir flushes a directory entry change (the rename) to stable storage.
 func syncDir(dir string) error {
 	d, err := os.Open(dir) //nolint:gosec // G304: dir derives from the cache root

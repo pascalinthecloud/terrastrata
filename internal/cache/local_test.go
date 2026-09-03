@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -152,5 +153,40 @@ func TestLocalRejectsPathTraversal(t *testing.T) {
 	// The file must live under root, not at the real /etc/passwd.
 	if _, err := os.Stat(filepath.Join(root, "etc/passwd")); err != nil {
 		t.Errorf("traversal key should be contained under root: %v", err)
+	}
+}
+
+func TestLocalDelete(t *testing.T) {
+	root := t.TempDir()
+	c, err := NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	ctx := context.Background()
+	if err := c.Put(ctx, "ns/type/file.zip", strings.NewReader("payload")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Delete(ctx, "ns/type/file.zip"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, hit, err := c.Get(ctx, "ns/type/file.zip"); err != nil || hit {
+		t.Errorf("after Delete: hit %v, err %v; want a miss", hit, err)
+	}
+	// Deleting what is not there is what the caller asked for either way.
+	if err := c.Delete(ctx, "ns/type/file.zip"); err != nil {
+		t.Errorf("second Delete: %v, want nil", err)
+	}
+
+	// A traversal key is anchored into the root like every other operation, so
+	// Delete cannot reach a file outside it.
+	outside := filepath.Join(filepath.Dir(root), "outside.txt")
+	if err := os.WriteFile(outside, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := c.Delete(ctx, "../outside.txt"); err != nil {
+		t.Fatalf("Delete with a traversal key: %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("Delete escaped the cache root and removed %s: %v", outside, err)
 	}
 }

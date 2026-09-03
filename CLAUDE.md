@@ -121,7 +121,12 @@ set without credentials).
 - `S3` — AWS SDK v2 backend; path-style addressing for custom endpoints (MinIO/OVH).
 - `Layered` — composes local → S3: `Get` warms the local layer on an S3 hit; `Put`
   writes local synchronously and S3 asynchronously. A nil durable layer is handled
-  transparently (local-only mode).
+  transparently (local-only mode). With `WithDurableVerifier`, an object warmed
+  from S3 is checked before it is served (`internal/mirror/integrity.go` supplies
+  the provider-archive verifier: registry digest first, cached `zh:` digest as the
+  offline fallback, pass when neither is available). A rejection deletes the local
+  copy and is reported as a **miss**, so the handler refetches upstream and heals
+  both layers; `cache_integrity_failures_total` records it.
 - `Evictor` — when `CACHE_MAX_BYTES > 0`, a background sweeper (5m) deletes
   least-recently-used files (by mtime) down to ~90% of the budget; skips the
   staging dir and in-progress temp files.

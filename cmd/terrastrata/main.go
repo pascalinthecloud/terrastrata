@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -78,15 +79,34 @@ func run() error {
 			"bucket", cfg.S3.Bucket, "endpoint", cfg.S3.Endpoint,
 			"static_credentials", cfg.S3.AccessKey != "")
 	}
-	blobCache := cache.NewLayered(local, durable, logger)
-
 	metrics := observ.NewMetrics()
+
 	// One upstream client per mirrored registry. They share the cache, which is
 	// safe because every cache key is namespaced by hostname.
 	upstreams := make(map[string]*mirror.Upstream, len(cfg.Upstreams))
 	for _, up := range cfg.Upstreams {
 		upstreams[up.Hostname] = mirror.NewUpstream(up.Base, "terrastrata/"+version, cfg.UpstreamTimeout)
 	}
+
+	// Verify archives coming back from the durable layer. That layer is shared,
+	// outlives every replica, and is writable by anything holding the bucket
+	// credentials, so it is the one cache input this process did not produce and
+	// check itself. The verifier needs to read the archives index back through
+	// the whole cache, which is why it closes over blobCache: the closure only
+	// runs during a Get, long after the assignment below.
+	var blobCache *cache.Layered
+	var layeredOpts []cache.LayeredOption
+	if durable != nil {
+		verifier := mirror.DurableVerifier(cacheReaderFunc(func(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+			return blobCache.Get(ctx, key)
+		}), upstreams, logger)
+		layeredOpts = append(layeredOpts,
+			cache.WithDurableVerifier(verifier),
+			cache.WithIntegrityMetrics(metrics),
+		)
+	}
+	blobCache = cache.NewLayered(local, durable, logger, layeredOpts...)
+
 	handler, err := mirror.NewHandler(mirror.Options{
 		Cache:     blobCache,
 		Upstreams: upstreams,
@@ -256,6 +276,14 @@ func serve(ctx context.Context, srv *http.Server, logger *slog.Logger) error {
 	}
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// cacheReaderFunc adapts a function to mirror.CacheReader.
+type cacheReaderFunc func(ctx context.Context, key string) (io.ReadCloser, bool, error)
+
+// Get implements mirror.CacheReader.
+func (f cacheReaderFunc) Get(ctx context.Context, key string) (io.ReadCloser, bool, error) {
+	return f(ctx, key)
 }
 
 // healthHandler reports liveness/readiness. It is intentionally dependency-free:
