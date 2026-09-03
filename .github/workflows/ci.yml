@@ -64,6 +64,69 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
           govulncheck ./...
+      # govulncheck and osv-scanner answer different questions and both are
+      # cheap. govulncheck is call-graph aware: it only reports a vulnerability
+      # our code can actually reach, which keeps it quiet enough to gate on.
+      # osv-scanner reports any dependency *version* in go.mod with a known
+      # advisory, reachable or not — the view an auditor or a downstream
+      # consumer of the SBOM takes, and the one that catches a vulnerable module
+      # sitting in the graph waiting for a future call site.
+      - name: osv-scanner
+        run: |
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.5.1
+          osv-scanner scan source --recursive .
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # "app" mode records what actually ends up in the binary rather than every
+      # module in the graph, so the BOM describes the artifact we ship instead of
+      # the checkout it was built from. Build constraints steer Go's module
+      # selection, so they have to match the Dockerfile's build.
+      - name: Generate CycloneDX SBOM
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.12.0
+          cyclonedx-gomod app -licenses -json -main ./cmd/terrastrata -output sbom.cdx.json .
+      - name: Summarise the SBOM
+        run: |
+          count=$(jq '.components | length' sbom.cdx.json)
+          test "$count" -gt 0 || { echo "SBOM lists no components" >&2; exit 1; }
+          {
+            echo "### SBOM — $count components (CycloneDX $(jq -r .specVersion sbom.cdx.json))"
+            echo
+            jq -r '.components[] | "- `\(.name)` \(.version)"' sbom.cdx.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+
+  deps:
+    name: Dependency review
+    # Compares the PR's dependency manifests against the base branch and fails
+    # on a newly introduced advisory. This is the gate Dependabot cannot be:
+    # Dependabot reacts after a fixed version exists, while this refuses the
+    # dependency at the point someone adds it.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          # Strong copyleft would be a licensing problem for an Apache-2.0
+          # project. Better to hear about it in review than at adoption.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0
+          comment-summary-in-pr: never
 
   charts:
     name: Helm chart + manifests

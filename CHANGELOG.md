@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bills of material on every release.** Each GitHub Release now carries the
+  per-platform SPDX SBOM buildkit produces for the image (Go modules plus the
+  distroless base) and a CycloneDX 1.6 BOM of the binary's own dependency graph.
+  The SPDX documents already existed as registry attestations; releases now ship
+  them as files anyone can download. CI additionally uploads the CycloneDX SBOM
+  as a build artifact on every run, so dependency changes are visible per commit.
+- **Dependency scanning beyond `govulncheck`.** `osv-scanner` now runs against
+  `go.mod` (reporting affected dependency *versions* whether or not our code
+  reaches them, which is the view an SBOM consumer takes), and
+  `actions/dependency-review-action` gates pull requests on newly introduced
+  high-severity advisories and copyleft licences. `govulncheck` stays as the
+  call-graph-aware, low-noise check, and Trivy still scans the built image.
 - The E2E job now covers the module path **with `AUTH_TOKEN` set**: a second
   terrastrata instance runs with auth on, and a real `terraform init` resolves a
   module through it using a `credentials` block. That init only succeeds if the
