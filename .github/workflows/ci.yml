@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26"
+  GO_VERSION: "1.27"
 
 # All actions are pinned to full commit SHAs (the tag comment is informative
 # only): tags are mutable and this repo's supply-chain posture (SECURITY.md)
