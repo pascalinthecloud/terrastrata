@@ -164,6 +164,10 @@ a provider *mirror*, not a provider registry).
   passed through verbatim with `X-Cache: BYPASS` rather than failing the request.
 - **No checksums exist** in this protocol, so archives get only an https-only
   fetch and a 512 MiB cap — weaker than the provider path's SHA-256 verification.
+  Because nothing downstream can catch a tampered archive, `repack.go` validates
+  both entry names *and* link targets: symlinks/hardlinks resolving outside the
+  tree (or absolute) fail the repack, and a hard link's root-relative target is
+  stripped of the wrapper directory alongside the names.
 
 Routing constraint: the module and provider route patterns overlap with neither
 more specific (`/v1/modules/{ns}/{name}/{sys}/{v}/download` vs
@@ -171,7 +175,10 @@ more specific (`/v1/modules/{ns}/{name}/{sys}/{v}/download` vs
 on one `ServeMux` **panics at startup**. Providers stay on `mirrorMux`; modules are
 registered on the root mux. The archive endpoint is mounted outside bearer auth
 because Terraform sends credentials only to registry endpoints, never to the
-`X-Terraform-Get` fetch.
+`X-Terraform-Get` fetch — so when `AUTH_TOKEN` is set it is authorized by a
+15-minute HMAC (keyed on the token, over the coordinates) that the authenticated
+download endpoint puts in the URL and `handleArchive` verifies before touching the
+cache or upstream (`sign.go`). No token = unsigned URLs and an open endpoint.
 
 ### `internal/prewarm`
 Optional startup cache seeding. Replays mirror requests (`[host/]ns/type[@version]`)

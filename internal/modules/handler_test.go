@@ -104,6 +104,35 @@ func testMux(h *Handler) *http.ServeMux {
 	return mux
 }
 
+// newSignedTestHandler is newTestHandler with auth enabled, so archive URLs are
+// signed and the archive endpoint demands a valid signature.
+func newSignedTestHandler(t *testing.T, base, token string) *Handler {
+	t.Helper()
+	c, err := cache.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	h, err := NewHandler(Options{
+		Cache:      c,
+		Upstream:   NewUpstream(base, "terrastrata-test", 5*time.Second),
+		Metrics:    NopMetrics{},
+		StagingDir: t.TempDir(),
+		AuthToken:  token,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	return h
+}
+
+// archivePathFrom turns an X-Terraform-Get value into the request go-getter
+// would actually make: it strips the "//subdir" suffix, keeping the query.
+func archivePathFrom(get string) string {
+	base, _ := splitSubdir(get)
+	return base
+}
+
 func do(t *testing.T, mux *http.ServeMux, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -362,5 +391,87 @@ func TestDiscoveryDocument(t *testing.T) {
 	// providers.v1 would invite clients to use a protocol it does not implement.
 	if _, ok := doc["providers.v1"]; ok {
 		t.Error("discovery advertises providers.v1, which terrastrata does not implement")
+	}
+}
+
+// With AUTH_TOKEN set, the archive endpoint cannot check a bearer header
+// (Terraform sends none on the X-Terraform-Get fetch), so it must instead
+// require the signature the authenticated download endpoint mints. Without this,
+// AUTH_TOKEN would cover every route but the one that serves module source.
+func TestArchiveRequiresSignatureWhenAuthEnabled(t *testing.T) {
+	fr := newFakeRegistry(t)
+	h := newSignedTestHandler(t, fr.server.URL, "s3cr3t")
+	mux := testMux(h)
+
+	rec := do(t, mux, "/v1/modules/ns/vpc/aws/1.0.0/download")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("download status = %d, want 204", rec.Code)
+	}
+	get := rec.Header().Get("X-Terraform-Get")
+	if !strings.Contains(get, "&sig=") || !strings.Contains(get, "&exp=") {
+		t.Fatalf("X-Terraform-Get = %q, want it signed", get)
+	}
+	signed := archivePathFrom(get)
+
+	// The signed URL works.
+	if rec := do(t, mux, signed); rec.Code != http.StatusOK {
+		t.Fatalf("signed archive status = %d, want 200", rec.Code)
+	}
+	if n := fr.archiveHits.Load(); n != 1 {
+		t.Fatalf("upstream archive hits = %d, want 1", n)
+	}
+
+	// Everything else does not — including a request for an archive already
+	// sitting in the cache, which is the case that would otherwise leak module
+	// source to an unauthenticated caller.
+	bad := []struct {
+		name string
+		path string
+	}{
+		{"no signature", "/v1/modules/ns/vpc/aws/1.0.0/archive?archive=tar.gz"},
+		{"tampered signature", strings.Replace(signed, "sig=", "sig=00", 1)},
+		{"signature for another module", strings.Replace(signed, "/vpc/", "/vpc2/", 1)},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			if rec := do(t, mux, tc.path); rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", rec.Code)
+			}
+		})
+	}
+	// A rejected request must not have reached upstream either.
+	if n := fr.archiveHits.Load(); n != 1 {
+		t.Errorf("upstream archive hits = %d, want 1 (rejected requests must not fetch)", n)
+	}
+}
+
+func TestArchiveSignatureExpires(t *testing.T) {
+	fr := newFakeRegistry(t)
+	h := newSignedTestHandler(t, fr.server.URL, "s3cr3t")
+	mux := testMux(h)
+
+	rec := do(t, mux, "/v1/modules/ns/vpc/aws/1.0.0/download")
+	signed := archivePathFrom(rec.Header().Get("X-Terraform-Get"))
+
+	// Move the clock past the URL's lifetime.
+	h.now = func() time.Time { return time.Now().Add(archiveURLTTL + time.Minute) }
+	if rec := do(t, mux, signed); rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 for an expired URL", rec.Code)
+	}
+}
+
+// With no token configured, nothing changes: the URL carries no signature and
+// the archive endpoint serves it. This is the default internal-network mode.
+func TestArchiveUnsignedWhenAuthDisabled(t *testing.T) {
+	fr := newFakeRegistry(t)
+	mux := testMux(newTestHandler(t, fr.server.URL, 0))
+
+	rec := do(t, mux, "/v1/modules/ns/vpc/aws/1.0.0/download")
+	get := rec.Header().Get("X-Terraform-Get")
+	if strings.Contains(get, "sig=") {
+		t.Errorf("X-Terraform-Get = %q, want no signature when auth is disabled", get)
+	}
+	if rec := do(t, mux, archivePathFrom(get)); rec.Code != http.StatusOK {
+		t.Errorf("archive status = %d, want 200", rec.Code)
 	}
 }

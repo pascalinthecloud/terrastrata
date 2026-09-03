@@ -151,9 +151,12 @@ All configuration is via environment variables:
 >
 > Module registry endpoints are different: Terraform *does* send credentials from
 > a `credentials` block to them, so `AUTH_TOKEN` works for modules. The module
-> **archive** endpoint stays unauthenticated regardless, because Terraform
-> attaches credentials only to registry requests and not to the archive download
-> that follows.
+> **archive** endpoint cannot use the bearer header — Terraform attaches
+> credentials only to registry requests, not to the archive download that follows
+> — so it is authorized differently: when `AUTH_TOKEN` is set, the (authenticated)
+> download endpoint hands out an archive URL carrying a 15-minute HMAC signature,
+> and the archive endpoint rejects requests without a valid one with `403`. With
+> no token configured the archive endpoint is open, like every other route.
 
 ### OVH Object Storage example
 
