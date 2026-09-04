@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The bundled Grafana dashboard shows durable-layer integrity: a stat in the
+  top row (green at zero, red above it) and a bar series of rejections over
+  time. The metric was documented as alert-worthy but appeared on none of the
+  dashboard's sixteen panels, which made the advice hollow. `deploy/local/`'s
+  README gains the procedure for making one fail on purpose, so the panel can be
+  seen working rather than trusted.
+
 ## [0.5.3] - 2026-09-03
 
 ### Security
