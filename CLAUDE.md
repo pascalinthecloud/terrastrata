@@ -317,6 +317,9 @@ Service directly.
 - Multi-replica HA requires S3-backed mode (or a RWX PVC); the default RWO PVC is single-replica
 - The module registry is single-upstream: module requests carry no hostname segment,
   so there is no dimension to multiplex on the way providers do
+- The module API path comes from the upstream's `/.well-known/terraform.json`
+  (`modules.v1`), resolved lazily once per process with a 5m retry cooldown and a
+  `/v1/modules/` fallback — so private registries on non-standard paths work
 
 ---
 

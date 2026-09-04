@@ -5,12 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
+
+// defaultModulesPath is the module API prefix assumed when an upstream does not
+// answer service discovery. It is what registry.terraform.io and everything
+// modelled on it serves.
+const defaultModulesPath = "/v1/modules/"
+
+// discoveryRetryAfter bounds how often a failed discovery is retried, so a
+// registry that does not serve /.well-known/terraform.json costs one extra
+// request every few minutes rather than one per module request.
+const discoveryRetryAfter = 5 * time.Minute
 
 // Upstream talks to a Terraform module registry using the module registry
 // protocol. Unlike the provider path — where terrastrata translates the registry
@@ -27,11 +39,25 @@ type Upstream struct {
 	// opted out of TLS; against an https registry a plain-http source would be a
 	// downgrade and is refused.
 	allowHTTP bool
+
+	log *slog.Logger
+
+	// Service discovery state. The module registry protocol says a client reads
+	// /.well-known/terraform.json and uses the modules.v1 path it advertises;
+	// hardcoding /v1/modules/ works for registry.terraform.io but 404s against a
+	// private registry (Artifactory, Nexus) that advertises its own path.
+	//
+	// Discovery is lazy rather than done at startup: a registry that is briefly
+	// unreachable must not stop terrastrata from starting or from serving what it
+	// already has cached.
+	mu          sync.Mutex
+	modulesPath string    // resolved absolute prefix, ending in "/"; empty until discovered
+	lastAttempt time.Time // when discovery last failed, for the retry cooldown
 }
 
 // NewUpstream constructs an Upstream client. base must be an absolute URL with
 // no trailing slash (config.FromEnv guarantees this).
-func NewUpstream(base, userAgent string, timeout time.Duration) *Upstream {
+func NewUpstream(base, userAgent string, timeout time.Duration, log *slog.Logger) *Upstream {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -45,24 +71,111 @@ func NewUpstream(base, userAgent string, timeout time.Duration) *Upstream {
 		ResponseHeaderTimeout: timeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	return &Upstream{
 		base:      base,
 		client:    &http.Client{Transport: transport},
 		ua:        userAgent,
 		allowHTTP: strings.HasPrefix(base, "http://"),
+		log:       log,
 	}
+}
+
+// modulesAPI returns the absolute prefix for module API requests, ending in "/".
+//
+// The first call performs service discovery against the upstream; the answer is
+// cached for the life of the process, since a registry moving its API path is not
+// something that happens under a running client. A failure falls back to
+// defaultModulesPath and is retried no more often than discoveryRetryAfter, so an
+// upstream without a discovery document stays cheap.
+func (u *Upstream) modulesAPI(ctx context.Context) string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+
+	if u.modulesPath != "" {
+		return u.modulesPath
+	}
+	if !u.lastAttempt.IsZero() && time.Since(u.lastAttempt) < discoveryRetryAfter {
+		return u.base + defaultModulesPath
+	}
+
+	path, err := u.discoverModulesAPI(ctx)
+	if err != nil {
+		u.lastAttempt = time.Now()
+		u.log.Warn("module service discovery failed, assuming the default API path",
+			"upstream", u.base, "path", defaultModulesPath, "err", err)
+		return u.base + defaultModulesPath
+	}
+	u.modulesPath = path
+	u.log.Info("module API path resolved by service discovery", "upstream", u.base, "path", path)
+	return path
+}
+
+// discoverModulesAPI reads /.well-known/terraform.json and resolves the
+// modules.v1 service it advertises. The value may be relative (the usual case)
+// or absolute, and is resolved against the discovery document's own URL, as the
+// protocol requires and as Terraform's client does.
+func (u *Upstream) discoverModulesAPI(ctx context.Context) (string, error) {
+	endpoint := u.base + "/.well-known/terraform.json"
+	req, err := u.newRequest(ctx, endpoint)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := u.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("modules: GET %s: %w", endpoint, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("modules: GET %s: unexpected status %s", endpoint, resp.Status)
+	}
+
+	var doc struct {
+		Modules string `json:"modules.v1"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+		return "", fmt.Errorf("modules: decode %s: %w", endpoint, err)
+	}
+	if doc.Modules == "" {
+		return "", fmt.Errorf("modules: %s advertises no modules.v1 service", endpoint)
+	}
+
+	base, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("modules: parse %s: %w", endpoint, err)
+	}
+	ref, err := url.Parse(doc.Modules)
+	if err != nil {
+		return "", fmt.Errorf("modules: parse modules.v1 %q: %w", doc.Modules, err)
+	}
+	resolved := base.ResolveReference(ref)
+	// A discovery document must not talk us into a plaintext API when the
+	// upstream itself is https; that would be a downgrade an attacker on the
+	// path could ask for.
+	if resolved.Scheme != "https" && (resolved.Scheme != "http" || !u.allowHTTP) {
+		return "", fmt.Errorf("modules: modules.v1 %q is not https", doc.Modules)
+	}
+	out := resolved.String()
+	if !strings.HasSuffix(out, "/") {
+		out += "/"
+	}
+	return out, nil
 }
 
 // AllowHTTP reports whether plain-http archive sources are tolerated.
 func (u *Upstream) AllowHTTP() bool { return u.allowHTTP }
 
 // ListVersions returns the raw versions document for a module via
-// GET /v1/modules/:namespace/:name/:system/versions. The body is returned as
+// GET {modules.v1}/:namespace/:name/:system/versions. The body is returned as
 // received (after a well-formedness check) because terrastrata serves the same
 // protocol it consumes.
 func (u *Upstream) ListVersions(ctx context.Context, c Coordinates) ([]byte, error) {
-	endpoint := fmt.Sprintf("%s/v1/modules/%s/%s/%s/versions",
-		u.base, url.PathEscape(c.Namespace), url.PathEscape(c.Name), url.PathEscape(c.System))
+	endpoint := fmt.Sprintf("%s%s/%s/%s/versions", u.modulesAPI(ctx),
+		url.PathEscape(c.Namespace), url.PathEscape(c.Name), url.PathEscape(c.System))
 
 	req, err := u.newRequest(ctx, endpoint)
 	if err != nil {
@@ -101,15 +214,15 @@ func (u *Upstream) ListVersions(ctx context.Context, c Coordinates) ([]byte, err
 }
 
 // Location resolves a module version's source via
-// GET /v1/modules/:namespace/:name/:system/:version/download, which answers with
+// GET {modules.v1}/:namespace/:name/:system/:version/download, which answers with
 // the X-Terraform-Get header. The spec prescribes 204 No Content; some
 // registries answer 200, so both are accepted.
 //
 // A relative header value is resolved against the download endpoint's URL, as
 // the protocol requires and as Terraform's own client does.
 func (u *Upstream) Location(ctx context.Context, c Coordinates) (string, error) {
-	endpoint := fmt.Sprintf("%s/v1/modules/%s/%s/%s/%s/download",
-		u.base, url.PathEscape(c.Namespace), url.PathEscape(c.Name),
+	endpoint := fmt.Sprintf("%s%s/%s/%s/%s/download", u.modulesAPI(ctx),
+		url.PathEscape(c.Namespace), url.PathEscape(c.Name),
 		url.PathEscape(c.System), url.PathEscape(c.Version))
 
 	req, err := u.newRequest(ctx, endpoint)

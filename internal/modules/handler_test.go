@@ -83,7 +83,7 @@ func newTestHandler(t *testing.T, base string, ttl time.Duration) *Handler {
 	}
 	h, err := NewHandler(Options{
 		Cache:       c,
-		Upstream:    NewUpstream(base, "terrastrata-test", 5*time.Second),
+		Upstream:    NewUpstream(base, "terrastrata-test", 5*time.Second, nil),
 		Metrics:     NopMetrics{},
 		StagingDir:  t.TempDir(),
 		VersionsTTL: ttl,
@@ -114,7 +114,7 @@ func newSignedTestHandler(t *testing.T, base, token string) *Handler {
 	}
 	h, err := NewHandler(Options{
 		Cache:      c,
-		Upstream:   NewUpstream(base, "terrastrata-test", 5*time.Second),
+		Upstream:   NewUpstream(base, "terrastrata-test", 5*time.Second, nil),
 		Metrics:    NopMetrics{},
 		StagingDir: t.TempDir(),
 		AuthToken:  token,

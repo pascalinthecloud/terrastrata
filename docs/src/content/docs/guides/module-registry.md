@@ -63,6 +63,28 @@ but nothing is cached. Watch for it:
 rate(terrastrata_module_downloads_total{outcome="bypass"}[5m])
 ```
 
+## Pointing at a private registry
+
+`MODULES_UPSTREAM_BASE` can name any registry that speaks the protocol.
+terrastrata finds its API the way Terraform does — by reading
+`/.well-known/terraform.json` and using the `modules.v1` path it advertises — so
+an Artifactory or Nexus repository that serves modules from
+`/artifactory/api/terraform/<repo>/v1/modules/` works without extra
+configuration. The resolved path is logged once:
+
+```
+INFO module API path resolved by service discovery
+     upstream=https://nexus.corp path=https://nexus.corp/repository/tf/v1/modules/
+```
+
+A registry that serves no discovery document falls back to `/v1/modules/`, which
+is what the public registry uses, and the fallback is logged as a warning so a
+404-ing private registry is diagnosable rather than mysterious. Discovery is
+resolved once per process and retried at most every five minutes while it fails,
+so it costs nothing per request. A document advertising a plain-http address is
+refused when the upstream itself is https — that would be a downgrade anyone on
+the path could ask for.
+
 ## With `AUTH_TOKEN` set
 
 Module endpoints behave differently from provider ones, because Terraform *does*
@@ -108,6 +130,3 @@ If the missing checksums are unacceptable for your threat model, leave
 - Only GitHub-hosted `git::` sources can be cached; the rest bypass.
 - Single-upstream by design — module requests carry no hostname segment, so there
   is nothing to multiplex the way providers do.
-- `MODULES_UPSTREAM_BASE` assumes the standard `/v1/modules/` path rather than
-  doing service discovery, so a private registry advertising a different path is
-  not yet supported.
