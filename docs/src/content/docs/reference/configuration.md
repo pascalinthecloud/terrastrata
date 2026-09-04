@@ -64,7 +64,7 @@ Pre-warming is best-effort and runs in the background: it never blocks startup o
 | Variable | Default | Description |
 |---|---|---|
 | `MODULES_ENABLED` | `false` | Serve the [module registry protocol](/terrastrata/guides/module-registry/), adding `/.well-known/terraform.json` and `/v1/modules/` |
-| `MODULES_UPSTREAM_BASE` | _(first `UPSTREAM_BASE` entry)_ | Upstream module registry. Only needed when modules come from a different host than providers |
+| `MODULES_UPSTREAM_BASE` | _(first `UPSTREAM_BASE` entry)_ | Upstream module registry. Only needed when modules come from a different host than providers. Its API path is discovered from `/.well-known/terraform.json`, so a private registry serving modules from a non-standard path needs no extra configuration |
 
 ## An OVH Object Storage example
 

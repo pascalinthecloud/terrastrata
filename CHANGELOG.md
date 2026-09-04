@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The module registry upstream now does service discovery** instead of assuming
+  `/v1/modules/`. It reads `/.well-known/terraform.json` and uses the advertised
+  `modules.v1` path, as Terraform's own client does, so a private registry that
+  serves modules from somewhere else — Artifactory's
+  `/artifactory/api/terraform/<repo>/v1/modules/`, for instance — works without
+  extra configuration instead of 404ing on every request with nothing explaining
+  why. Registries with no discovery document keep working on the old assumption,
+  and both outcomes are logged with the resolved path. Discovery happens once per
+  process (retried at most every five minutes while it fails), and a document
+  advertising a plain-http address is refused against an https upstream.
+
 ### Added
 
 - The bundled Grafana dashboard shows durable-layer integrity: a stat in the

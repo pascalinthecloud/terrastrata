@@ -58,6 +58,17 @@ happened — see [troubleshooting](/terrastrata/guides/troubleshooting/).
 - **Bounded disk use.** With `CACHE_MAX_BYTES` set, a background sweeper evicts
   least-recently-used artifacts down to ~90% of the budget.
 
+## Where the project is going
+
+There is no roadmap page here, on purpose: a hand-maintained list of intentions
+goes stale faster than anything else in a repository. What is planned lives in
+the [issue tracker](https://github.com/pascalinthecloud/terrastrata/issues), what
+shipped lives in the
+[changelog](https://github.com/pascalinthecloud/terrastrata/blob/main/CHANGELOG.md),
+and what a given feature deliberately does not do is written on that feature's own
+page — see the limits at the end of the
+[module registry guide](/terrastrata/guides/module-registry/) for the shape of it.
+
 ## What it is not
 
 - **Not a provider registry.** It serves the *mirror* protocol for providers, so
