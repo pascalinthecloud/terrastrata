@@ -122,6 +122,7 @@ Backed by terrastrata's Prometheus metrics:
 | Versions-index outcomes | `terrastrata_versions_index_total{outcome}` |
 | Cache size + eviction rate | `terrastrata_cache_size_bytes`, `terrastrata_cache_evicted_bytes_total` |
 | Process memory / goroutines | `process_*`, `go_*` |
+| Durable integrity failures | `terrastrata_cache_integrity_failures_total` |
 
 ## Tuning notes
 
@@ -129,6 +130,14 @@ Backed by terrastrata's Prometheus metrics:
   `terrastrata` service) enables the evictor, which is what publishes
   `terrastrata_cache_size_bytes` and the eviction counters. Lower it (e.g.
   `200MB`) and pull a large provider to watch eviction happen.
+- **Integrity panels:** they only have anything to show in S3 mode
+  (`docker-compose.s3.yml`), since verification runs on objects coming back from
+  the durable layer. To watch one fail, warm a provider, stop terrastrata and
+  delete its local cache volume (so the next read must come from MinIO), overwrite
+  the cached `.zip` object in MinIO with junk, then request it again: the client
+  still gets correct bytes — terrastrata rejects the object, refetches from
+  upstream and repairs both layers — while the counter increments and the
+  container logs name both digests.
 - **More traffic:** add bigger providers to `loadgen.sh` (e.g.
   `hashicorp/azurerm`), raise `CONCURRENCY`, or run real `terraform` loops.
 - **Scrape resolution:** Prometheus scrapes every 5s (`prometheus/prometheus.yml`)
