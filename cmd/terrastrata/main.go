@@ -128,7 +128,7 @@ func run() error {
 	if cfg.Modules.Enabled {
 		modHandler, err = modules.NewHandler(modules.Options{
 			Cache:       blobCache,
-			Upstream:    modules.NewUpstream(cfg.Modules.UpstreamBase, "terrastrata/"+version, cfg.UpstreamTimeout),
+			Upstream:    modules.NewUpstream(cfg.Modules.UpstreamBase, "terrastrata/"+version, cfg.UpstreamTimeout, logger),
 			Metrics:     metrics,
 			StagingDir:  filepath.Join(cfg.CacheDir, ".staging"),
 			VersionsTTL: cfg.IndexTTL,

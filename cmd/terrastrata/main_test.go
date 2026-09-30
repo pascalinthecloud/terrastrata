@@ -109,7 +109,7 @@ func newTestServer(t *testing.T, cfg config.Config, blobCache mirror.Cache) (*ht
 	if cfg.Modules.Enabled {
 		mods, err = modules.NewHandler(modules.Options{
 			Cache:      blobCache,
-			Upstream:   modules.NewUpstream(cfg.Modules.UpstreamBase, "terrastrata-test", 5*time.Second),
+			Upstream:   modules.NewUpstream(cfg.Modules.UpstreamBase, "terrastrata-test", 5*time.Second, nil),
 			Metrics:    metrics,
 			StagingDir: t.TempDir(),
 			Logger:     logger,
