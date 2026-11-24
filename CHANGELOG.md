@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-24
+
+### Security
+
+- **The image is rebuilt with Go 1.27.4.** The 0.5.3 image was built with Go
+  1.27.1, whose standard library has known vulnerabilities (CVE-2026-111943 in
+  `crypto/x509`, GO-2026-6859 in `net/http`) that the scheduled image scan flags.
+  Go module dependencies are updated to their latest patch releases as well.
+
 ### Fixed
 
 - **The module registry upstream now does service discovery** instead of assuming
@@ -309,7 +318,8 @@ Initial release.
 - CI (test, lint, govulncheck, Trivy scan) and a release pipeline publishing a
   signed (cosign keyless), multi-arch image with SBOM and provenance to GHCR.
 
-[Unreleased]: https://github.com/pascalinthecloud/terrastrata/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/pascalinthecloud/terrastrata/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/pascalinthecloud/terrastrata/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/pascalinthecloud/terrastrata/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/pascalinthecloud/terrastrata/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/pascalinthecloud/terrastrata/compare/v0.5.0...v0.5.1
